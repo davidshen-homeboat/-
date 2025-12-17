@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => {
       outDir: 'dist',
       emptyOutDir: true,
     },
-    publicDir: './', // Serve static files like manifest.json from root
+    // Removed publicDir: './' to prevent overwriting the built index.html
     define: {
       'process.env.API_KEY': JSON.stringify(env.API_KEY)
     }
