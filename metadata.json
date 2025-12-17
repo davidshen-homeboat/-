@@ -1,0 +1,5 @@
+{
+  "name": "BakeryOS - Sheet Integrator",
+  "description": "A centralized dashboard integrating multiple data sources (Sales, Inventory, Reservations) into a single view with AI-powered business insights.",
+  "requestFramePermissions": []
+}
