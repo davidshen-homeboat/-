@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertCircle, CheckCircle2, FileSpreadsheet, Search, AlertTriangle, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Utensils, Menu, ChefHat, Users } from 'lucide-react';
+import { AlertCircle, CheckCircle2, FileSpreadsheet, Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import AnalysisCard from './components/AnalysisCard';
 import { MOCK_RESERVATIONS } from './constants';
@@ -34,12 +34,12 @@ function App() {
     try {
       const csvText = await fetchCsvFromUrl(newUrl);
       
-      // Always parse as Reservations in this version
-      const newRes = mapReservationsCSV(csvText);
-      if (newRes.length === 0) throw new Error('無法解析訂位資料，請檢查資料格式 (A欄日期, C欄類型, D欄時間...)');
-      
-      const isFirstCustom = dataSources.length === 0;
-      setReservations(prev => isFirstCustom ? newRes : [...prev, ...newRes]);
+      const parsedData = mapReservationsCSV(csvText);
+      if (parsedData.length > 0) {
+        setReservations(prev => [...prev, ...parsedData]);
+      } else {
+        throw new Error('無法解析資料，請檢查欄位格式');
+      }
 
       const newSource: DataSource = {
         id: sourceId,
@@ -62,46 +62,20 @@ function App() {
   };
 
   const removeSource = (id: string) => {
+    const source = dataSources.find(ds => ds.id === id);
+    if (!source) return;
+
     setDataSources(prev => prev.filter(ds => ds.id !== id));
-    // In a real app, we would remove the specific reservations from this source,
-    // but for this simplified version, we might keep them or reset to mock if empty.
-    if (dataSources.length === 1) {
+    // If no custom sources remain, reset to mock data
+    // This is a simplification; in a real app we'd filter out specific IDs
+    const hasRemaining = dataSources.some(ds => ds.id !== id);
+    if (!hasRemaining) {
         setReservations(MOCK_RESERVATIONS);
     }
   };
 
-  // Filter and Group
-  const filteredReservations = reservations.filter(res => 
-      res.customerName.includes(searchTerm) || 
-      res.date.includes(searchTerm) ||
-      (res.phone && res.phone.includes(searchTerm))
-  );
-
-  const groupedReservations = filteredReservations.reduce((groups: any, res) => {
-    const date = res.date;
-    if (!groups[date]) {
-      groups[date] = [];
-    }
-    groups[date].push(res);
-    return groups;
-  }, {});
-
-  const sortedDates = Object.keys(groupedReservations).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-
-  const getReservationStyle = (type: string) => {
-      if (type.includes('外帶')) return 'bg-sky-50 border-sky-200 hover:border-sky-300';
-      if (type.includes('包場')) return 'bg-rose-50 border-rose-200 hover:border-rose-300';
-      return 'bg-amber-50 border-amber-200 hover:border-amber-300';
-  };
-
-  const getReservationBadge = (type: string) => {
-      if (type.includes('外帶')) return 'bg-sky-100 text-sky-700';
-      if (type.includes('包場')) return 'bg-rose-100 text-rose-700';
-      return 'bg-amber-100 text-amber-800';
-  };
-
+  // Helpers
   const formatDateDisplay = (dateStr: string) => {
-    // 2025-12-18 -> 12/18 (週X)
     const date = new Date(dateStr);
     const month = date.getMonth() + 1;
     const day = date.getDate();
@@ -112,17 +86,25 @@ function App() {
   const renderContent = () => {
     switch (currentView) {
       case AppView.RESERVATIONS:
+          const filteredRes = reservations.filter(res => 
+             res.customerName.includes(searchTerm) || res.date.includes(searchTerm) || (res.phone && res.phone.includes(searchTerm))
+          );
+          const groupedRes = filteredRes.reduce((groups: any, res) => {
+             const date = res.date;
+             if (!groups[date]) groups[date] = [];
+             groups[date].push(res);
+             return groups;
+          }, {});
+          const sortedResDates = Object.keys(groupedRes).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+
           return (
              <div className="space-y-6 animate-fade-in pb-20">
                 <div className="flex flex-col gap-2">
                     <h1 className="text-xl md:text-2xl font-bold text-slate-800">訂位紀錄</h1>
-                    <p className="text-slate-500 text-sm">
-                      {dataSources.length > 0 ? `已連結 ${dataSources.length} 個資料來源` : '目前顯示範例資料'}
-                    </p>
+                    <p className="text-slate-500 text-sm">管理餐廳內用、包場與外帶預約</p>
                 </div>
-
-                <AnalysisCard reservations={filteredReservations} />
-
+                <AnalysisCard type="RESERVATIONS" data={filteredRes} />
+                
                 <div className="sticky top-0 bg-slate-50 pt-2 pb-4 z-20">
                      <div className="relative w-full">
                         <Search className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -131,86 +113,56 @@ function App() {
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
                             placeholder="搜尋日期、姓名或電話..." 
-                            className="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl shadow-sm text-base focus:outline-none focus:ring-2 focus:ring-orange-500 bg-white" 
+                            className="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-orange-500 bg-white" 
                         />
                      </div>
                 </div>
 
                 <div className="space-y-8">
-                    {sortedDates.map(date => (
+                    {sortedResDates.map(date => (
                         <div key={date}>
                             <div className="flex items-center gap-2 mb-3 sticky top-20 bg-slate-50/90 backdrop-blur-sm p-2 rounded-lg z-10 w-fit">
                                 <CalendarIcon className="w-5 h-5 text-orange-600" />
                                 <h2 className="text-lg font-bold text-slate-800">{formatDateDisplay(date)}</h2>
                                 <span className="text-xs text-slate-500 font-bold px-2 py-0.5 bg-slate-200 rounded-full">
-                                    {groupedReservations[date].length} 組
+                                    {groupedRes[date].length} 組
                                 </span>
                             </div>
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                {groupedReservations[date]
-                                  .sort((a: any, b: any) => parseInt(a.time.replace(':', '')) - parseInt(b.time.replace(':', '')))
-                                  .map((res: Reservation) => (
-                                    <div key={res.id} className={`p-5 rounded-xl shadow-sm border transition-all active:scale-[0.98] ${getReservationStyle(res.type)}`}>
+                                {groupedRes[date].map((res: Reservation) => (
+                                    <div key={res.id} className={`p-5 rounded-xl shadow-sm border ${res.type.includes('外帶') ? 'bg-sky-50 border-sky-200' : res.type.includes('包場') ? 'bg-rose-50 border-rose-200' : 'bg-amber-50 border-amber-200'}`}>
                                         <div className="flex justify-between items-start mb-3">
                                             <div className="flex gap-2 items-center">
-                                                <div className="bg-white/80 text-slate-800 px-2.5 py-1 rounded-md text-sm font-bold border border-slate-200/50 shadow-sm">
-                                                    {res.time}
-                                                </div>
-                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${getReservationBadge(res.type)}`}>
-                                                    {res.type}
-                                                </span>
+                                                <div className="bg-white/80 text-slate-800 px-2.5 py-1 rounded-md text-sm font-bold shadow-sm">{res.time}</div>
+                                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/50">{res.type}</span>
                                             </div>
-                                            {res.table && (
-                                                <span className="text-xs font-bold text-slate-500 bg-white/50 px-2 py-1 rounded-lg border border-slate-200/30">
-                                                    桌號: {res.table}
-                                                </span>
-                                            )}
+                                            {res.table && <span className="text-xs font-bold text-slate-500 bg-white/50 px-2 py-1 rounded-lg">桌號: {res.table}</span>}
                                         </div>
                                         <div className="flex justify-between items-center">
                                             <h3 className="font-bold text-xl text-slate-800">{res.customerName}</h3>
                                             <div className="flex items-center gap-1.5 text-slate-600 text-sm font-medium bg-white/40 px-2 py-1 rounded-full">
-                                                <Users className="w-4 h-4" />
-                                                <span>{res.pax}位</span>
+                                                <Users className="w-4 h-4" /> <span>{res.pax}位</span>
                                             </div>
                                         </div>
-                                        
                                         <div className="mt-4 pt-3 border-t border-slate-900/5 flex flex-col gap-2">
-                                            {res.phone && (
-                                                <div className="flex items-center gap-2 text-sm text-slate-600">
-                                                    <div className="p-1 bg-white rounded-full">
-                                                        <Phone className="w-3.5 h-3.5" />
-                                                    </div>
-                                                    <a href={`tel:${res.phone}`} className="hover:underline hover:text-orange-600">{res.phone}</a>
-                                                </div>
-                                            )}
-                                            {res.notes && (
-                                                <div className="flex items-start gap-2 text-sm text-slate-600 italic bg-white/30 p-2 rounded-lg">
-                                                    <Utensils className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                                                    {res.notes}
-                                                </div>
-                                            )}
+                                            {res.phone && <div className="flex items-center gap-2 text-sm text-slate-600"><Phone className="w-3.5 h-3.5" /> {res.phone}</div>}
+                                            {res.notes && <div className="text-sm text-slate-600 italic bg-white/30 p-2 rounded-lg">{res.notes}</div>}
                                         </div>
                                     </div>
                                 ))}
                             </div>
                         </div>
                     ))}
-                    {sortedDates.length === 0 && (
-                        <div className="text-center py-20 bg-white rounded-xl border border-dashed border-slate-200">
-                            <CalendarIcon className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-                            <p className="text-slate-500 font-medium">沒有符合的訂位紀錄</p>
-                        </div>
-                    )}
                 </div>
              </div>
-          )
+          );
 
       case AppView.INTEGRATION:
         return (
           <div className="space-y-6 max-w-4xl mx-auto animate-fade-in pb-20">
              <div className="text-center py-6">
                 <h1 className="text-xl md:text-2xl font-bold text-slate-800">資料源管理</h1>
-                <p className="text-sm md:text-base text-slate-500 mt-2">連結 Google Sheet 以同步訂位資訊</p>
+                <p className="text-sm md:text-base text-slate-500 mt-2">連結 Google Sheet 以同步訂位資料</p>
              </div>
 
              <div className="bg-white rounded-xl shadow-md border border-indigo-100 overflow-hidden">
@@ -222,19 +174,19 @@ function App() {
                 </div>
                 <div className="p-4 md:p-6">
                     <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                        <div className="md:col-span-4">
-                            <label className="block text-xs font-bold text-slate-500 mb-1">表單名稱</label>
+                        <div className="md:col-span-12 lg:col-span-4">
+                            <label className="block text-xs font-bold text-slate-500 mb-1">名稱</label>
                             <input 
                                 type="text" 
                                 value={newName}
                                 onChange={(e) => setNewName(e.target.value)}
-                                placeholder="例如: 12月訂位" 
+                                placeholder="例如: 12月訂位表" 
                                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             />
                         </div>
-                        <div className="md:col-span-8">
+                        <div className="md:col-span-12 lg:col-span-8">
                             <label className="block text-xs font-bold text-slate-500 mb-1">Google Sheet 網址</label>
-                            <div className="flex flex-col sm:flex-row gap-2">
+                            <div className="flex gap-2">
                                 <input 
                                     type="text" 
                                     value={newUrl}
@@ -245,7 +197,7 @@ function App() {
                                 <button 
                                     onClick={handleAddSource}
                                     disabled={loadingSource}
-                                    className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition disabled:opacity-50 whitespace-nowrap flex items-center justify-center gap-2"
+                                    className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition disabled:opacity-50 whitespace-nowrap"
                                 >
                                     {loadingSource ? '連線中...' : '連結'}
                                 </button>
@@ -257,6 +209,10 @@ function App() {
                             <AlertCircle className="w-3 h-3" /> {errorMsg}
                         </div>
                     )}
+                    <div className="mt-4 p-3 bg-slate-50 rounded-lg text-xs text-slate-500">
+                        <p className="font-bold mb-1">CSV 欄位格式說明：</p>
+                        <p>A欄:日期, C欄:類型(內用/外帶), D欄:時間, E欄:人數, F欄:姓名, G欄:電話, H欄: 備註, I欄: 桌號</p>
+                    </div>
                 </div>
              </div>
 
@@ -266,20 +222,14 @@ function App() {
                     <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50">
                         <FileSpreadsheet className="w-10 h-10 text-slate-300 mx-auto mb-2" />
                         <p className="text-slate-500 text-sm">尚未連結任何檔案，目前顯示範例數據。</p>
-                        <button 
-                             onClick={() => setNewUrl('https://docs.google.com/spreadsheets/d/1osZXDyZf11bM2UpIgL7uViJ3UosZUVVoVEg_4d9qsYA/edit?usp=sharing')}
-                             className="mt-3 text-indigo-600 text-sm font-medium hover:underline"
-                        >
-                            試用範例連結
-                        </button>
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 gap-3">
                         {dataSources.map((source) => (
                             <div key={source.id} className="bg-white p-4 rounded-xl border border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center shadow-sm gap-4">
                                 <div className="flex items-center gap-4">
-                                    <div className="p-2 rounded-lg bg-purple-100 text-purple-600">
-                                        <FileSpreadsheet className="w-5 h-5" />
+                                    <div className="p-2 rounded-lg bg-orange-100 text-orange-600">
+                                        <CalendarIcon className="w-5 h-5" />
                                     </div>
                                     <div>
                                         <h4 className="font-bold text-slate-800 text-sm md:text-base">{source.name}</h4>

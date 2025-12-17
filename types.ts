@@ -10,11 +10,13 @@ export interface Reservation {
   notes?: string;
 }
 
+export type DataType = 'RESERVATIONS';
+
 export interface DataSource {
   id: string;
   name: string;
   url: string;
-  type: 'RESERVATIONS'; // Only allow reservations now
+  type: DataType;
   lastUpdated: string;
   status: 'ACTIVE' | 'ERROR';
 }

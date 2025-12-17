@@ -69,7 +69,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isOpen, on
         </nav>
 
         <div className="p-4 border-t border-slate-700 text-center text-xs text-slate-500">
-          v2.0 PWA Enabled
+          v2.6 Reservation Only
         </div>
       </aside>
     </>

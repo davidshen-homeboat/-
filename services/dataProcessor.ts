@@ -26,53 +26,34 @@ export const parseCSV = (text: string): string[][] => {
 const normalizeDate = (raw: string): string => {
   if (!raw) return '';
   
-  // 1. Basic Cleanup
   let clean = raw.trim()
-      .replace(/\([^\)]+\)/g, '')   // Remove (一)
-      .replace(/（[^）]+）/g, '') // Remove （一）
-      .replace(/[年月日]/g, '/')    // Chinese chars to slash
-      .replace(/[.-]/g, '/');      // Dot/Dash to slash
+      .replace(/\([^\)]+\)/g, '')   
+      .replace(/（[^）]+）/g, '') 
+      .replace(/[年月日]/g, '/')    
+      .replace(/[.-]/g, '/');      
 
-  // Remove any trailing garbage
   clean = clean.split(' ')[0];
-
-  // 2. Split to analyze parts
   const parts = clean.split('/').filter(p => p.length > 0);
-
   let year = 0, month = 0, day = 0;
 
   if (parts.length === 2) {
-      // MM/DD -> Use current year
       const now = new Date();
       year = now.getFullYear();
-      
       month = parseInt(parts[0]);
       day = parseInt(parts[1]);
   } else if (parts.length === 3) {
-      // YYY/MM/DD or YY/MM/DD or YYYY/MM/DD
       let y = parseInt(parts[0]);
       month = parseInt(parts[1]);
       day = parseInt(parts[2]);
-      
-      // Handle Taiwan ROC Year (e.g. 112, 113)
-      if (y >= 100 && y <= 199) {
-          year = y + 1911;
-      } 
-      // Handle Short Year (e.g. 23, 24 -> 2023, 2024)
-      else if (y < 100) {
-          year = y + 2000;
-      }
-      else {
-          year = y;
-      }
+      if (y >= 100 && y <= 199) year = y + 1911;
+      else if (y < 100) year = y + 2000;
+      else year = y;
   } else {
-      // Fallback for ISO strings or other formats
       const d = new Date(clean);
       if (!isNaN(d.getTime())) {
          let y = d.getFullYear();
          if (y < 200) y += 1900; 
          if (y >= 100 && y <= 199) y += 1911;
-
          year = y;
          month = d.getMonth() + 1;
          day = d.getDate();
@@ -81,45 +62,14 @@ const normalizeDate = (raw: string): string => {
       }
   }
 
-  // Validate constructed date
   const d = new Date(year, month - 1, day);
-  if (isNaN(d.getTime()) || d.getMonth() !== month - 1) {
-      return '';
-  }
+  if (isNaN(d.getTime()) || d.getMonth() !== month - 1) return '';
   
-  // Return YYYY-MM-DD
   const yy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   
   return `${yy}-${mm}-${dd}`;
-};
-
-export const mapReservationsCSV = (csvText: string): Reservation[] => {
-  try {
-    const rows = parseCSV(csvText);
-    return rows.map((row, index) => {
-        // Look for rows that start with a valid date
-        if (!row[0]) return null;
-        const nDate = normalizeDate(row[0]);
-        if (!nDate) return null;
-
-        return {
-            id: `res-${index}`,
-            date: nDate,
-            type: row[2] || '內用', 
-            time: row[3] || '00:00',
-            pax: parseInt(row[4]) || 1,
-            customerName: row[5] || '未知貴賓',
-            phone: row[6] || '',
-            table: row[8] || '', 
-            notes: '' 
-        };
-    }).filter(r => r !== null) as Reservation[];
-  } catch (e) {
-    console.error("Error parsing reservations CSV", e);
-    return [];
-  }
 };
 
 export const fetchCsvFromUrl = async (url: string): Promise<string> => {
@@ -141,4 +91,33 @@ export const fetchCsvFromUrl = async (url: string): Promise<string> => {
      throw new Error(`Failed to fetch CSV: ${response.statusText}`);
   }
   return await response.text();
+};
+
+// --- Mappers ---
+
+export const mapReservationsCSV = (csvText: string): Reservation[] => {
+  try {
+    const rows = parseCSV(csvText);
+    return rows.map((row, index) => {
+        if (!row[0]) return null;
+        const nDate = normalizeDate(row[0]);
+        if (!nDate) return null;
+
+        // Expect: Date, _, Type, Time, Pax, Name, Phone, _, Table
+        return {
+            id: `res-${index}`,
+            date: nDate,
+            type: row[2] || '內用', 
+            time: row[3] || '00:00',
+            pax: parseInt(row[4]) || 1,
+            customerName: row[5] || '未知貴賓',
+            phone: row[6] || '',
+            table: row[8] || '', 
+            notes: '' 
+        };
+    }).filter(r => r !== null) as Reservation[];
+  } catch (e) {
+    console.error("Error parsing reservations", e);
+    return [];
+  }
 };
