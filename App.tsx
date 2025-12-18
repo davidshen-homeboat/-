@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertCircle, CheckCircle2, FileSpreadsheet, Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users } from 'lucide-react';
+import { AlertCircle, CheckCircle2, FileSpreadsheet, Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import AnalysisCard from './components/AnalysisCard';
 import { MOCK_RESERVATIONS } from './constants';
@@ -54,6 +54,7 @@ function App() {
       setNewUrl('');
       setNewName('');
       setLoadingSource(false);
+      setCurrentView(AppView.RESERVATIONS); // 跳轉回訂位頁面
     } catch (e: any) {
       console.error(e);
       setErrorMsg(e.message || '連線失敗，請確認連結權限');
@@ -62,15 +63,11 @@ function App() {
   };
 
   const removeSource = (id: string) => {
-    const source = dataSources.find(ds => ds.id === id);
-    if (!source) return;
-
     setDataSources(prev => prev.filter(ds => ds.id !== id));
-    // If no custom sources remain, reset to mock data
-    // This is a simplification; in a real app we'd filter out specific IDs
-    const hasRemaining = dataSources.some(ds => ds.id !== id);
-    if (!hasRemaining) {
-        setReservations(MOCK_RESERVATIONS);
+    // Reset reservations if all sources removed
+    const remainingSources = dataSources.filter(ds => ds.id !== id);
+    if (remainingSources.length === 0) {
+        setReservations([]);
     }
   };
 
@@ -89,6 +86,26 @@ function App() {
           const filteredRes = reservations.filter(res => 
              res.customerName.includes(searchTerm) || res.date.includes(searchTerm) || (res.phone && res.phone.includes(searchTerm))
           );
+          
+          if (reservations.length === 0) {
+              return (
+                <div className="flex flex-col items-center justify-center py-20 text-center animate-fade-in">
+                    <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mb-6">
+                        <Inbox className="w-10 h-10 text-slate-300" />
+                    </div>
+                    <h2 className="text-xl font-bold text-slate-800">尚未連結訂位資料</h2>
+                    <p className="text-slate-500 mt-2 mb-8 max-w-xs">目前沒有任何訂位紀錄。請前往「資料來源設定」連結您的 Google Sheet。</p>
+                    <button 
+                        onClick={() => setCurrentView(AppView.INTEGRATION)}
+                        className="bg-orange-600 text-white px-6 py-2.5 rounded-xl font-bold shadow-lg shadow-orange-200 hover:bg-orange-700 transition-all flex items-center gap-2"
+                    >
+                        <LinkIcon className="w-5 h-5" />
+                        去設定資料來源
+                    </button>
+                </div>
+              );
+          }
+
           const groupedRes = filteredRes.reduce((groups: any, res) => {
              const date = res.date;
              if (!groups[date]) groups[date] = [];
@@ -119,6 +136,11 @@ function App() {
                 </div>
 
                 <div className="space-y-8">
+                    {sortedResDates.length === 0 && searchTerm && (
+                        <div className="text-center py-10 text-slate-500">
+                            找不到符合「{searchTerm}」的訂位資料
+                        </div>
+                    )}
                     {sortedResDates.map(date => (
                         <div key={date}>
                             <div className="flex items-center gap-2 mb-3 sticky top-20 bg-slate-50/90 backdrop-blur-sm p-2 rounded-lg z-10 w-fit">
@@ -221,7 +243,7 @@ function App() {
                 {dataSources.length === 0 ? (
                     <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50">
                         <FileSpreadsheet className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-                        <p className="text-slate-500 text-sm">尚未連結任何檔案，目前顯示範例數據。</p>
+                        <p className="text-slate-500 text-sm">尚未連結任何檔案。</p>
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 gap-3">
