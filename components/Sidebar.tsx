@@ -17,7 +17,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isOpen, on
 
   const handleNavClick = (id: AppView) => {
     onChangeView(id);
-    onClose(); // Close sidebar on mobile when item clicked
+    onClose(); 
   };
 
   return (
@@ -42,16 +42,15 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isOpen, on
             </div>
             <div>
               <h1 className="font-bold text-lg leading-tight">BakeryOS</h1>
-              <p className="text-xs text-slate-400">訂位管理系統</p>
+              <p className="text-xs text-slate-400">專屬訂位系統</p>
             </div>
           </div>
-          {/* Mobile Close Button */}
           <button onClick={onClose} className="md:hidden text-slate-400 hover:text-white">
             <X className="w-6 h-6" />
           </button>
         </div>
 
-        <nav className="flex-1 py-6 px-3 space-y-1 overflow-y-auto">
+        <nav className="flex-1 py-6 px-3 space-y-1">
           {menuItems.map((item) => (
             <button
               key={item.id}
@@ -69,7 +68,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isOpen, on
         </nav>
 
         <div className="p-4 border-t border-slate-700 text-center text-xs text-slate-500">
-          v2.6 Reservation Only
+          v3.1 Stable Mode
         </div>
       </aside>
     </>
