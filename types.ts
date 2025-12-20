@@ -1,5 +1,7 @@
+
 export interface Reservation {
   id: string;
+  sourceId?: string; // Track which data source this reservation belongs to
   customerName: string;
   time: string;
   pax: number;
@@ -8,6 +10,7 @@ export interface Reservation {
   phone?: string;
   table?: string;
   notes?: string;
+  creator?: string; // 沈家杭 | TAKA
   isLocal?: boolean;
   syncStatus?: 'synced' | 'pending' | 'failed';
 }

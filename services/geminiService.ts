@@ -1,3 +1,4 @@
+
 import { GoogleGenAI } from "@google/genai";
 import { Reservation, DataType } from "../types";
 
@@ -13,8 +14,9 @@ export const analyzeBakeryData = async (
     // Simple filter to get recent/relevant data to avoid token limits
     const dataContext = JSON.stringify(data.slice(0, 40)); 
 
+    // Use gemini-3-flash-preview for analysis task as it is the recommended model for basic text tasks.
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3-flash-preview',
       contents: `請分析以下訂位資料並給出營運建議:\n\n${dataContext}`,
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
