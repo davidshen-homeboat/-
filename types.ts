@@ -8,6 +8,8 @@ export interface Reservation {
   phone?: string;
   table?: string;
   notes?: string;
+  isLocal?: boolean;
+  syncStatus?: 'synced' | 'pending' | 'failed';
 }
 
 export type DataType = 'RESERVATIONS';
@@ -16,6 +18,7 @@ export interface DataSource {
   id: string;
   name: string;
   url: string;
+  writeUrl?: string; // Apps Script Web App URL
   type: DataType;
   lastUpdated: string;
   status: 'ACTIVE' | 'ERROR';
