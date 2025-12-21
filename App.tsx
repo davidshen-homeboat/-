@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox, RefreshCw, Loader2, X, Save, Globe, FileSpreadsheet, Database, ClipboardList, CheckCircle2, AlertCircle, Info, UserCheck } from 'lucide-react';
+import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox, RefreshCw, Loader2, X, Save, Globe, FileSpreadsheet, Database, ClipboardList, CheckCircle2, AlertCircle, Info, UserCheck, MessageSquare } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import AnalysisCard from './components/AnalysisCard';
 import { AppView, Reservation, DataSource } from './types';
@@ -11,6 +11,7 @@ const STORAGE_KEY_SOURCES = 'bakery_sources';
 
 const TABLE_OPTIONS = ['綠1', '綠2', '綠3', '綠4', '綠5', '白1', '白2', '白3', '白4', '白5'];
 const CREATOR_OPTIONS = ['沈家杭', 'TAKA'];
+const TYPE_OPTIONS = ['內用', '外帶', '包場'];
 
 function App() {
   const [currentView, setCurrentView] = useState<AppView>(AppView.RESERVATIONS);
@@ -91,7 +92,6 @@ function App() {
         }
 
         setReservations(prev => {
-          // 過濾掉: 1. 在黑名單中的資料 2. 本地尚未同步完成但雲端已有的資料
           const filteredRemote = allRemote.filter(r => 
             !deletedBlacklist.some(d => 
               d.name === r.customerName.trim() && 
@@ -145,7 +145,6 @@ function App() {
     
     if (success) {
       setReservations(prev => prev.map(r => r.id === newRes.id ? { ...r, syncStatus: 'synced' } : r));
-      // 成功後延遲更新，給 Google 快取一點時間
       setTimeout(() => handleSyncAll(true), 5000);
     }
     
@@ -164,10 +163,7 @@ function App() {
     const date = res.date;
     const time = res.time;
 
-    // 1. 加入本地黑名單
     setDeletedBlacklist(prev => [...prev, { name: customerName, date, time }]);
-
-    // 2. 樂觀更新 UI
     const originalList = [...reservations];
     setReservations(prev => prev.filter(r => r.id !== res.id));
     
@@ -179,16 +175,12 @@ function App() {
     });
 
     if (success) {
-      // 成功後延遲 5 秒同步一次，這段期間黑名單會保護資料不飄回
       setTimeout(() => handleSyncAll(true), 5000);
-      
-      // 30 秒後從黑名單移除（屆時 Google 快取應該已經更新）
       setTimeout(() => {
         setDeletedBlacklist(prev => prev.filter(d => 
           !(d.name === customerName && d.date === date && d.time === time)
         ));
       }, 30000);
-
     } else {
       alert("同步刪除失敗。");
       setReservations(originalList);
@@ -219,7 +211,8 @@ function App() {
       (r.customerName && r.customerName.toLowerCase().includes(s)) || 
       (r.date && r.date.includes(s)) || 
       (r.phone && r.phone.includes(s)) ||
-      (r.creator && r.creator.toLowerCase().includes(s))
+      (r.creator && r.creator.toLowerCase().includes(s)) ||
+      (r.notes && r.notes.toLowerCase().includes(s))
     );
   }, [reservations, searchTerm]);
 
@@ -240,7 +233,7 @@ function App() {
             <div className="flex justify-between items-end px-2 pt-4">
                 <div>
                     <h1 className="text-2xl font-black text-slate-800">訂位管理戰情室</h1>
-                    <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">A-日期 / D-時間 / F-姓名 / H-填單人 / I-桌號</p>
+                    <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">A-日期 / C-類型 / D-時間 / F-姓名 / H-填單人 / I-桌號 / K-備註</p>
                 </div>
                 <button onClick={() => handleSyncAll(false)} disabled={syncingAll} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-600 shadow-sm flex items-center gap-2 text-xs font-black active:scale-95">
                     {syncingAll ? <Loader2 className="w-4 h-4 animate-spin text-orange-600" /> : <RefreshCw className="w-4 h-4 text-orange-600" />}
@@ -253,7 +246,7 @@ function App() {
             <div className="sticky top-0 bg-slate-50/80 backdrop-blur-md pt-2 pb-4 z-20 px-1">
                  <div className="relative w-full">
                     <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" />
-                    <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="搜尋顧客、填單人..." className="w-full pl-12 pr-4 py-4 border-none rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500 bg-white" />
+                    <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="搜尋顧客、填單人、備註..." className="w-full pl-12 pr-4 py-4 border-none rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500 bg-white" />
                  </div>
             </div>
 
@@ -266,7 +259,7 @@ function App() {
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                             {groupedRes[date].map((res: Reservation) => (
-                                <div key={res.id} className="p-6 rounded-[32px] shadow-sm border border-slate-100 bg-white relative transition-all group hover:border-orange-200">
+                                <div key={res.id} className="p-6 rounded-[32px] shadow-sm border border-slate-100 bg-white relative transition-all group hover:border-orange-200 flex flex-col h-full">
                                     <div className="absolute top-4 right-4 flex gap-2 items-center">
                                         <button onClick={() => handleDeleteReservation(res)} className="p-3 text-slate-200 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all md:opacity-0 md:group-hover:opacity-100 opacity-100"><Trash2 className="w-5 h-5" /></button>
                                         {res.isLocal && <div className={`w-2.5 h-2.5 rounded-full ${res.syncStatus === 'synced' ? 'bg-green-500' : 'bg-rose-500 animate-pulse'}`}></div>}
@@ -279,13 +272,23 @@ function App() {
                                     <div className="flex items-center gap-1.5 text-xs text-slate-400 font-bold mb-4">
                                         <Phone className="w-3 h-3" /> {res.phone || '無電話紀錄'}
                                     </div>
-                                    <div className="flex justify-between items-center pt-4 border-t border-slate-50">
-                                        <div className="flex items-center gap-1.5 text-slate-600 font-black text-xs">
-                                            <Users className="w-4 h-4 text-orange-500" /> <span>{res.pax}位</span>
+                                    
+                                    {res.notes && (
+                                      <div className="mb-4 p-3 bg-amber-50 rounded-2xl text-[11px] font-bold text-amber-700 border border-amber-100/50 flex gap-2">
+                                        <MessageSquare className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                                        <span>{res.notes}</span>
+                                      </div>
+                                    )}
+
+                                    <div className="mt-auto pt-4 border-t border-slate-50">
+                                        <div className="flex justify-between items-center">
+                                            <div className="flex items-center gap-1.5 text-slate-600 font-black text-xs">
+                                                <Users className="w-4 h-4 text-orange-500" /> <span>{res.pax}位</span>
+                                            </div>
+                                            <div className="text-xs font-black text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-xl">{res.table || '未排桌'}</div>
                                         </div>
-                                        <div className="text-xs font-black text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-xl">{res.table || '未排桌'}</div>
+                                        {res.creator && <div className="mt-3 flex items-center gap-1 text-[10px] font-black text-slate-300 uppercase tracking-tighter"><UserCheck className="w-3 h-3" /> 填單: {res.creator}</div>}
                                     </div>
-                                    {res.creator && <div className="mt-3 flex items-center gap-1 text-[10px] font-black text-slate-300 uppercase tracking-tighter"><UserCheck className="w-3 h-3" /> 填單: {res.creator}</div>}
                                 </div>
                             ))}
                         </div>
@@ -366,18 +369,25 @@ function App() {
                     <h2 className="text-2xl font-black">填寫新訂位</h2>
                     <button onClick={() => !isSyncingToCloud && setIsModalOpen(false)}><X className="w-8 h-8" /></button>
                   </div>
-                  <div className="p-10 space-y-6 max-h-[75vh] overflow-y-auto custom-scrollbar">
+                  <div className="p-10 space-y-6 max-h-[85vh] overflow-y-auto custom-scrollbar">
                       <div className="grid grid-cols-2 gap-6">
                         <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">填單人 (H)</label><select value={form.creator} onChange={e => setForm({...form, creator: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold">{CREATOR_OPTIONS.map(c => <option key={c}>{c}</option>)}</select></div>
-                        <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">日期 (A)</label><input type="date" value={form.date} onChange={e => setForm({...form, date: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" /></div>
+                        <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">類型 (C)</label><select value={form.type} onChange={e => setForm({...form, type: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold">{TYPE_OPTIONS.map(t => <option key={t}>{t}</option>)}</select></div>
                       </div>
                       <div className="grid grid-cols-2 gap-6">
-                        <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">姓名 (F)</label><input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="姓名" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" /></div>
+                        <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">日期 (A)</label><input type="date" value={form.date} onChange={e => setForm({...form, date: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" /></div>
                         <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">時間 (D)</label><input type="time" value={form.time} onChange={e => setForm({...form, time: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" /></div>
                       </div>
                       <div className="grid grid-cols-2 gap-6">
-                        <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">人數 (E)</label><input type="number" value={form.pax} onChange={e => setForm({...form, pax: parseInt(e.target.value) || 0})} className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" /></div>
+                        <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">姓名 (F)</label><input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="姓名" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" /></div>
                         <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">電話 (G)</label><input type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="09XX..." className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" /></div>
+                      </div>
+                      <div className="grid grid-cols-1 gap-6">
+                        <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">人數 (E)</label><input type="number" value={form.pax} onChange={e => setForm({...form, pax: parseInt(e.target.value) || 0})} className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" /></div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-black text-slate-400 ml-1 uppercase">備註事項 (K)</label>
+                        <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} placeholder="特殊需求、慶生、兒童椅..." className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold min-h-[100px] resize-none"></textarea>
                       </div>
                       <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 ml-1 uppercase">分配桌號 (I)</label><div className="grid grid-cols-5 gap-2">{TABLE_OPTIONS.map(table => (<button key={table} onClick={() => handleTableToggle(table)} className={`py-3 rounded-xl text-xs font-black transition-all border ${selectedTables.includes(table) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md scale-105' : 'bg-slate-50 text-slate-400 border-slate-100 hover:bg-slate-100'}`}>{table}</button>))}</div></div>
                       <button onClick={handleSaveReservation} disabled={isSyncingToCloud} className="w-full bg-slate-900 text-white py-5 rounded-[24px] font-black text-lg flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50 shadow-xl">{isSyncingToCloud ? <Loader2 className="w-6 h-6 animate-spin text-orange-500" /> : <Save className="w-6 h-6" />}{isSyncingToCloud ? '同步雲端中...' : '確認並儲存訂位'}</button>
