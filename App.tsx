@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox, RefreshCw, Loader2, X, Save, Globe, FileSpreadsheet, Database, ClipboardList, CheckCircle2, AlertCircle, Info, UserCheck } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import AnalysisCard from './components/AnalysisCard';
@@ -19,6 +19,9 @@ function App() {
   const [isSyncingToCloud, setIsSyncingToCloud] = useState(false);
   const [syncProgress, setSyncProgress] = useState(0);
   const [syncStatusText, setSyncStatusText] = useState('');
+  
+  // 本地已刪除清單，防止 Google 快取延遲導致資料「飄回」
+  const [deletedBlacklist, setDeletedBlacklist] = useState<{name: string, date: string, time: string}[]>([]);
   
   const [reservations, setReservations] = useState<Reservation[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_RESERVATIONS);
@@ -88,12 +91,22 @@ function App() {
         }
 
         setReservations(prev => {
-          const localOnly = prev.filter(p => p.isLocal && !allRemote.some(r => 
+          // 過濾掉: 1. 在黑名單中的資料 2. 本地尚未同步完成但雲端已有的資料
+          const filteredRemote = allRemote.filter(r => 
+            !deletedBlacklist.some(d => 
+              d.name === r.customerName.trim() && 
+              d.date === r.date && 
+              d.time.substring(0,5) === r.time.substring(0,5)
+            )
+          );
+
+          const localOnly = prev.filter(p => p.isLocal && !filteredRemote.some(r => 
             r.customerName.trim() === p.customerName.trim() && 
             r.date === p.date && 
             r.time.substring(0,5) === p.time.substring(0,5)
           ));
-          return [...localOnly, ...allRemote];
+          
+          return [...localOnly, ...filteredRemote];
         });
 
         setDataSources(prev => prev.map(s => ({...s, lastUpdated: new Date().toLocaleString()})));
@@ -132,8 +145,8 @@ function App() {
     
     if (success) {
       setReservations(prev => prev.map(r => r.id === newRes.id ? { ...r, syncStatus: 'synced' } : r));
-      // 成功後背景偷偷更新一次，確保與雲端同步
-      setTimeout(() => handleSyncAll(true), 2000);
+      // 成功後延遲更新，給 Google 快取一點時間
+      setTimeout(() => handleSyncAll(true), 5000);
     }
     
     setIsSyncingToCloud(false);
@@ -147,23 +160,41 @@ function App() {
     if (!primarySource) return alert("請先設定 Apps Script 寫入網址。");
     if (!confirm(`確定要刪除「${res.customerName}」的訂位嗎？`)) return;
     
-    // 樂觀更新 UI
+    const customerName = res.customerName.trim();
+    const date = res.date;
+    const time = res.time;
+
+    // 1. 加入本地黑名單
+    setDeletedBlacklist(prev => [...prev, { name: customerName, date, time }]);
+
+    // 2. 樂觀更新 UI
     const originalList = [...reservations];
     setReservations(prev => prev.filter(r => r.id !== res.id));
     
     const success = await syncToGoogleSheet({
       action: 'delete',
-      customerName: res.customerName.trim(),
-      date: res.date,
-      time: res.time
+      customerName,
+      date,
+      time
     });
 
     if (success) {
-      // 成功後背景偷偷更新一次，確保雲端真的刪乾淨了
-      setTimeout(() => handleSyncAll(true), 2000);
+      // 成功後延遲 5 秒同步一次，這段期間黑名單會保護資料不飄回
+      setTimeout(() => handleSyncAll(true), 5000);
+      
+      // 30 秒後從黑名單移除（屆時 Google 快取應該已經更新）
+      setTimeout(() => {
+        setDeletedBlacklist(prev => prev.filter(d => 
+          !(d.name === customerName && d.date === date && d.time === time)
+        ));
+      }, 30000);
+
     } else {
       alert("同步刪除失敗。");
       setReservations(originalList);
+      setDeletedBlacklist(prev => prev.filter(d => 
+        !(d.name === customerName && d.date === date && d.time === time)
+      ));
     }
   };
 
