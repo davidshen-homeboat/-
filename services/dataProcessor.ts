@@ -52,32 +52,25 @@ export const fetchCsvStreaming = async (
 
 const fastNormalizeDate = (raw: string): string => {
   if (!raw) return '';
-  // 移除空格並將所有分隔符替換為 /
   const clean = raw.trim().split(' ')[0].replace(/[年月日.-]/g, '/');
   const parts = clean.split('/');
   
   try {
     let year, month, day;
     const currentYear = new Date().getFullYear();
-    
     if (parts.length === 2) {
-        // 處理 "1/6" 格式
         year = currentYear;
         month = parseInt(parts[0]);
         day = parseInt(parts[1]);
     } else if (parts.length === 3) {
-        // 處理 "2025/1/6" 或 "114/1/6"
         year = parseInt(parts[0]);
         month = parseInt(parts[1]);
         day = parseInt(parts[2]);
-        if (year < 200) year += 1911; // 民國年轉換
+        if (year < 200) year += 1911; 
     } else {
         return '';
     }
-    
     if (isNaN(year) || isNaN(month) || isNaN(day)) return '';
-    if (month < 1 || month > 12 || day < 1 || day > 31) return '';
-    
     return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   } catch (e) { return ''; }
 };
@@ -97,26 +90,36 @@ export const mapReservationsCSVAsync = async (
     const line = lines[i];
     if (!line || line.trim().length < 3) continue;
 
-    // 處理包含引號的 CSV 行 (例如備註中有逗號)
-    const row = line.includes('"') 
-      ? line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g)?.map(v => v.replace(/^"|"$/g, '').trim()) ?? []
-      : line.split(',').map(v => v.trim());
+    // 強化 CSV 行解析，處理引號包裹的逗號
+    let row: string[] = [];
+    let inQuotes = false;
+    let currentValue = '';
+    
+    for (let char of line) {
+      if (char === '"') inQuotes = !inQuotes;
+      else if (char === ',' && !inQuotes) {
+        row.push(currentValue.trim());
+        currentValue = '';
+      } else currentValue += char;
+    }
+    row.push(currentValue.trim());
 
     if (row[0]) {
       const nDate = fastNormalizeDate(row[0]);
       if (nDate) {
+        // 欄位映射：A0, B1, C2, D3, E4, F5, G6, H7, I8, J9, K10
         result.push({
-          id: `rc-${sourceId}-${i}-${Date.now()}`,
+          id: `rc-${sourceId}-${i}`,
           sourceId,
           date: nDate,
           type: row[2] || '內用',
-          time: row[3] || '00:00',
+          time: row[3] ? row[3].substring(0, 5) : '12:00',
           pax: parseInt(row[4]) || 1,
           customerName: row[5] || '未知',
           phone: row[6] || '',
-          creator: row[7] || '', // H 欄 (Index 7)
-          table: row[8] || '',   // I 欄 (Index 8)
-          notes: row[10] || '',  // K 欄 (Index 10)
+          creator: row[7] || '',
+          table: row[8] || '',
+          notes: row[10] || '',
           isLocal: false
         });
       }
@@ -127,6 +130,5 @@ export const mapReservationsCSVAsync = async (
       await new Promise(resolve => setTimeout(resolve, 0));
     }
   }
-  if (onProgress) onProgress(100);
   return result;
 };
