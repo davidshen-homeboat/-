@@ -19,8 +19,7 @@ function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSyncingToCloud, setIsSyncingToCloud] = useState(false);
   
-  // 緩衝與黑名單機制
-  const [localModifiedBuffer, setLocalModifiedBuffer] = useState<Map<string, Reservation>>(new Map());
+  // 黑名單機制：防止剛刪除的資料在 Sheet 同步完成前再次被撈回 App
   const [syncBlacklist, setSyncBlacklist] = useState<string[]>([]); 
   
   const [reservations, setReservations] = useState<Reservation[]>(() => {
@@ -57,39 +56,43 @@ function App() {
     localStorage.setItem(STORAGE_KEY_SOURCES, JSON.stringify(dataSources));
   }, [dataSources]);
 
+  /**
+   * 根據需求定義特徵簽名 (8個欄位組合)
+   * A日期|C類型|D時間|E人數|F姓名|G電話|I桌號|K備註
+   */
+  const getSignature = (res: Reservation | Partial<Reservation>) => {
+    return [
+      res.date || '',
+      res.type || '',
+      (res.time || '').substring(0, 5),
+      res.pax || 0,
+      (res.customerName || '').trim(),
+      (res.phone || '').trim(),
+      res.table || '',
+      (res.notes || '').trim()
+    ].join('|');
+  };
+
   const timeToMinutes = (timeStr: string) => {
     if (!timeStr) return 0;
     const [hrs, mins] = timeStr.split(':').map(Number);
     return hrs * 60 + (mins || 0);
   };
 
-  // 取得完整特徵簽名 (A+C+D+E+F+G+I+K)
-  const getSignature = (res: Reservation | Partial<Reservation>) => {
-    return `${res.date}_${res.type}_${(res.time || '').substring(0,5)}_${res.pax}_${(res.customerName || '').trim()}_${(res.phone || '').trim()}_${res.table}_${(res.notes || '').trim()}`;
-  };
-
-  // 進階桌位狀態分析：顯示佔用人資訊
   const { occupiedTableDetails } = useMemo(() => {
     if (!isModalOpen || !form.date || !form.time) return { occupiedTableDetails: new Map<string, {name: string, time: string}>() };
-    
     const startMins = timeToMinutes(form.time);
     const endMins = startMins + 90;
-
     const details = new Map<string, {name: string, time: string}>();
     reservations.forEach(res => {
-      if (res.id === editingReservation?.id) return; 
+      if (editingReservation && res.id === editingReservation.id) return; 
       if (res.date !== form.date) return;
-      
       const resStart = timeToMinutes(res.time);
       const resEnd = resStart + 90;
-
-      const isConflict = (startMins < resEnd) && (endMins > resStart);
-      if (isConflict) {
-        const tables = (res.table || '').split(', ').filter(Boolean);
-        tables.forEach(t => details.set(t, { name: res.customerName, time: res.time }));
+      if ((startMins < resEnd) && (endMins > resStart)) {
+        (res.table || '').split(', ').filter(Boolean).forEach(t => details.set(t, { name: res.customerName, time: res.time }));
       }
     });
-
     return { occupiedTableDetails: details };
   }, [isModalOpen, form.date, form.time, reservations, editingReservation]);
 
@@ -124,15 +127,10 @@ function App() {
         }
 
         setReservations(prev => {
-          const processedRemote = allRemote.filter(r => {
-            const signature = getSignature(r);
-            if (syncBlacklist.includes(signature)) return false;
-            return true;
-          });
+          const processedRemote = allRemote.filter(r => !syncBlacklist.includes(getSignature(r)));
           const localOnly = prev.filter(p => p.isLocal && !processedRemote.some(r => r.customerName === p.customerName && r.date === p.date && r.time === p.time));
           return [...localOnly, ...processedRemote];
         });
-        
         setDataSources(prev => prev.map(s => ({...s, lastUpdated: new Date().toLocaleString(), status: 'ACTIVE'})));
     } catch (e) { console.error("Batch Sync Failed", e); } 
     finally { if (!isSilent) setSyncingAll(false); }
@@ -189,21 +187,21 @@ function App() {
       setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'synced' } : r));
       setTimeout(() => handleSyncAll(true), 3000);
     }
-    
     setIsSyncingToCloud(false);
     setIsModalOpen(false);
     setEditingReservation(null);
   };
 
   const handleDeleteReservation = async (res: Reservation) => {
-    if (!confirm(`確定要從 Google Sheet 移除「${res.customerName}」的訂位嗎？`)) return;
+    if (!confirm(`確定要將此訂位從 Google Sheet 徹底移除嗎？`)) return;
     
     const signature = getSignature(res);
     setSyncBlacklist(prev => [...prev, signature]);
     setReservations(prev => prev.filter(r => r.id !== res.id));
     
     setIsSyncingToCloud(true);
-    // 發送完整 8 欄位特徵碼進行精確刪除
+    
+    // 發送完整 8 欄位特徵碼供 Apps Script 比對 A, C, D, E, F, G, I, K
     const success = await syncToGoogleSheet({ 
       action: 'delete', 
       date: res.date,
@@ -215,14 +213,15 @@ function App() {
       table: res.table,
       notes: res.notes
     }, res.sourceId);
+    
     setIsSyncingToCloud(false);
 
     if (success) {
       setTimeout(() => handleSyncAll(true), 4000);
-      // 15 分鐘後解除黑名單
-      setTimeout(() => setSyncBlacklist(prev => prev.filter(sig => sig !== signature)), 900000);
+      // 10 分鐘後解除黑名單，避免永久鎖定
+      setTimeout(() => setSyncBlacklist(prev => prev.filter(sig => sig !== signature)), 600000);
     } else {
-      alert("同步刪除失敗，請檢查 Apps Script 設定。");
+      alert("同步刪除失敗，請檢查網路或 Apps Script 連結。");
     }
   };
 
@@ -234,18 +233,19 @@ function App() {
   };
 
   const handleAddSource = () => {
-    if (!newUrl || !newWriteUrl) return alert("請填寫完整的 CSV 與 寫入網址");
+    if (!newUrl || !newWriteUrl) return alert("請填寫完整的連結資訊");
     setLoadingSource(true);
     const sId = `ds-${Date.now()}`;
     fetchCsvStreaming(newUrl, () => {}).then(csv => mapReservationsCSVAsync(csv, sId, () => {})).then(data => {
         const newSource: DataSource = { 
-          id: sId, name: newName || `分店 ${dataSources.length + 1}`, url: newUrl, writeUrl: newWriteUrl, 
+          id: sId, name: newName || `來源 ${dataSources.length + 1}`, url: newUrl, writeUrl: newWriteUrl, 
           type: 'RESERVATIONS', lastUpdated: new Date().toLocaleString(), status: 'ACTIVE', diningDuration: newDuration 
         };
         setDataSources(prev => [...prev, newSource]);
         setReservations(prev => [...data, ...prev]);
         setNewUrl(''); setNewWriteUrl(''); setNewName('');
-    }).catch(() => alert("連線失敗，請檢查網址權限"))
+        alert(`成功連結來源：${newSource.name}`);
+    }).catch(() => alert("連線失敗，請檢查連結權限"))
     .finally(() => setLoadingSource(false));
   };
 
@@ -277,24 +277,24 @@ function App() {
       <Sidebar currentView={currentView} onChangeView={setCurrentView} isOpen={isMobileMenuOpen} onClose={() => setIsMobileMenuOpen(false)} />
       
       <main className="flex-1 md:ml-64 p-5 md:p-12 h-screen overflow-y-auto custom-scrollbar">
-        <div className="max-w-4xl mx-auto">
+        <div className="max-w-4xl mx-auto pb-24">
           {currentView === AppView.RESERVATIONS ? (
             <div className="space-y-6">
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
                 <div className="space-y-3">
-                  <h1 className="text-3xl font-black text-slate-800 tracking-tight">訂位戰情室</h1>
+                  <h1 className="text-3xl font-black text-slate-800 tracking-tight">訂位中心</h1>
                   <div className="flex flex-wrap gap-2">
                     {dataSources.map(ds => (
                       <a key={ds.id} href={ds.url.includes('/export') ? ds.url.split('/export')[0] : ds.url} target="_blank" className="flex items-center gap-2 text-emerald-700 font-bold text-[10px] bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-200 hover:bg-emerald-100 shadow-sm">
                         <FileSpreadsheet className="w-3 h-3" /> {ds.name} <ExternalLink className="w-2 h-2" />
                       </a>
                     ))}
-                    {dataSources.length === 0 && <span className="text-xs font-bold text-rose-500 flex items-center gap-1 animate-pulse"><AlertCircle className="w-3 h-3" /> 請先設定資料來源</span>}
+                    {dataSources.length === 0 && <span className="text-xs font-bold text-rose-500 flex items-center gap-1 animate-pulse"><AlertCircle className="w-3 h-3" /> 請在「連線管理」設定資料來源</span>}
                   </div>
                 </div>
-                <button onClick={() => handleSyncAll()} disabled={syncingAll} className="p-3 bg-white border rounded-2xl text-xs font-black shadow-sm flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 min-w-[120px]">
+                <button onClick={() => handleSyncAll()} disabled={syncingAll} className="p-3 bg-white border rounded-2xl text-xs font-black shadow-sm flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 min-w-[140px]">
                   {syncingAll ? <Loader2 className="w-4 h-4 animate-spin text-orange-600" /> : <RefreshCw className="w-4 h-4 text-orange-600" />}
-                  同步所有 Sheet
+                  重新整理數據
                 </button>
               </div>
 
@@ -303,11 +303,11 @@ function App() {
               <div className="sticky top-0 bg-slate-50/80 backdrop-blur-md pt-2 pb-4 z-20">
                 <div className="relative">
                   <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" />
-                  <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="搜尋姓名、電話、特徵..." className="w-full pl-12 pr-4 py-4 border-none rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500 bg-white font-medium" />
+                  <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="搜尋顧客、電話、或桌號..." className="w-full pl-12 pr-4 py-4 border-none rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500 bg-white font-medium" />
                 </div>
               </div>
 
-              <div className="space-y-10 pb-24">
+              <div className="space-y-10">
                 {sortedDates.map(date => (
                   <div key={date}>
                     <div className="flex items-center gap-2 mb-4">
@@ -345,7 +345,7 @@ function App() {
                                 {res.pax}位 <span className="text-sm font-bold opacity-30">/</span> {res.creator || '系統'}
                               </div>
                               <div className="text-base font-black px-4 py-2 rounded-2xl bg-white shadow-sm border border-black/5">
-                                {res.table || '未選桌'}
+                                {res.table || '未配置'}
                               </div>
                             </div>
                           </div>
@@ -358,24 +358,24 @@ function App() {
               <button onClick={() => { setEditingReservation(null); setForm({ date: new Date().toISOString().split('T')[0], time: '12:00', pax: 2, type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0] }); setSelectedTables([]); setIsModalOpen(true); }} className="fixed bottom-8 right-8 w-16 h-16 bg-orange-600 text-white rounded-3xl shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 z-40 transition-transform"><Plus className="w-10 h-10" /></button>
             </div>
           ) : (
-             <div className="space-y-8 pb-24">
+             <div className="space-y-8">
                <div className="p-10 bg-slate-900 rounded-[40px] text-white shadow-2xl relative overflow-hidden">
-                  <h1 className="text-4xl font-black relative z-10">連線管理中心</h1>
-                  <p className="text-slate-400 mt-2 relative z-10 font-bold">在此新增或移除連線的 Google 試算表。</p>
+                  <h1 className="text-4xl font-black relative z-10">資料連線中心</h1>
+                  <p className="text-slate-400 mt-2 relative z-10 font-bold">在此連結多個 Google 試算表（銷售、叫貨、訂位、日報）。</p>
                   <div className="absolute bottom-0 right-0 p-6 opacity-20"><Layers className="w-32 h-32" /></div>
                </div>
 
                <div className="grid grid-cols-1 gap-4">
                  {dataSources.map(ds => (
-                   <div key={ds.id} className="bg-white rounded-[32px] shadow-sm border p-6 flex items-center justify-between group hover:border-emerald-300 transition-colors">
+                   <div key={ds.id} className="bg-white rounded-[32px] shadow-sm border p-6 flex items-center justify-between group hover:border-emerald-300 transition-all">
                       <div className="flex items-center gap-4">
                          <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center text-emerald-600"><Database className="w-6 h-6" /></div>
                          <div>
                             <h3 className="font-black text-slate-800 text-lg">{ds.name}</h3>
-                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">同步正常 | 更新於 {ds.lastUpdated}</p>
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">同步正常 | {ds.lastUpdated}</p>
                          </div>
                       </div>
-                      <button onClick={() => { if(confirm('斷開連線後將清除本地緩存，確定嗎？')) { setDataSources(prev => prev.filter(s => s.id !== ds.id)); setReservations(prev => prev.filter(r => r.sourceId !== ds.id)); } }} className="p-4 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all"><Unlink className="w-6 h-6" /></button>
+                      <button onClick={() => { if(confirm('斷開連線後將清除快照，確定嗎？')) { setDataSources(prev => prev.filter(s => s.id !== ds.id)); setReservations(prev => prev.filter(r => r.sourceId !== ds.id)); } }} className="p-4 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all"><Unlink className="w-6 h-6" /></button>
                    </div>
                  ))}
                </div>
@@ -385,10 +385,10 @@ function App() {
                   <div className="space-y-4">
                     <input type="text" value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="來源名稱 (例: 忠孝店)" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
                     <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="Google Sheet CSV 匯出連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
-                    <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script /exec 網址" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                    <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script /exec 連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
                   </div>
                   <button onClick={handleAddSource} disabled={loadingSource} className="w-full bg-slate-900 text-white py-5 rounded-3xl font-black text-lg transition-all active:scale-95 disabled:opacity-50">
-                    {loadingSource ? <Loader2 className="animate-spin inline mr-2" /> : '確認並連線'}
+                    {loadingSource ? <Loader2 className="animate-spin inline mr-2" /> : '確認連線'}
                   </button>
                </div>
             </div>
@@ -399,15 +399,15 @@ function App() {
       {isModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
               <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xl" onClick={() => !isSyncingToCloud && setIsModalOpen(false)}></div>
-              <div className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl relative z-10 overflow-hidden animate-in zoom-in duration-200 border border-white/20">
+              <div className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl relative z-10 overflow-hidden animate-in zoom-in duration-200">
                   <div className="bg-orange-600 p-6 text-white flex justify-between items-center">
-                    <h2 className="text-xl font-black">{editingReservation ? '修改訂位內容' : '快速填寫預約'}</h2>
+                    <h2 className="text-xl font-black">{editingReservation ? '修改訂位' : '快速填寫'}</h2>
                     <button onClick={() => !isSyncingToCloud && setIsModalOpen(false)}><X className="w-7 h-7" /></button>
                   </div>
                   <div className="p-8 space-y-6 max-h-[80vh] overflow-y-auto custom-scrollbar">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1">
-                          <label className="text-[10px] font-black text-slate-400 uppercase ml-1">管理人員</label>
+                          <label className="text-[10px] font-black text-slate-400 uppercase ml-1">填單人</label>
                           <select value={form.creator} onChange={e => setForm({...form, creator: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500">
                             {CREATOR_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
                           </select>
@@ -437,7 +437,7 @@ function App() {
                       
                       <div className="space-y-4">
                         <div className="flex justify-between items-center">
-                          <label className="text-[10px] font-black text-slate-400 uppercase ml-1">桌位配置 (多選)</label>
+                          <label className="text-[10px] font-black text-slate-400 uppercase ml-1">桌位分配 (多選)</label>
                           <span className="text-[10px] font-bold text-orange-600 bg-orange-50 px-2 py-0.5 rounded-md">當前時段：{form.time}</span>
                         </div>
                         <div className="grid grid-cols-4 gap-2">
@@ -446,12 +446,12 @@ function App() {
                             const isSelected = selectedTables.includes(t);
                             return (
                               <button key={t} onClick={() => !isOccupied && setSelectedTables(prev => prev.includes(t) ? prev.filter(x=>x!==t) : [...prev, t])} disabled={isOccupied} className={`py-4 rounded-xl border flex flex-col items-center justify-center transition-all ${
-                                isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 
+                                isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md transform scale-105' : 
                                 isOccupied ? 'bg-slate-100 text-slate-300 border-slate-50 cursor-not-allowed opacity-60' : 
                                 'bg-slate-50 text-slate-500 border-slate-100 hover:border-slate-300'
                               }`}>
                                 <span className="text-xs font-black">{t}</span>
-                                {isOccupied && <span className="text-[7px] font-bold mt-1 uppercase">Occupied</span>}
+                                {isOccupied && <span className="text-[7px] font-bold mt-1 uppercase">BUSY</span>}
                               </button>
                             );
                           })}
@@ -459,10 +459,10 @@ function App() {
                         
                         {occupiedTableDetails.size > 0 && (
                           <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100">
-                             <p className="text-[10px] font-black text-slate-500 uppercase mb-4 flex items-center gap-2"><Clock className="w-3 h-3 text-rose-500" /> 桌位佔用明細欄 (已佔用清單)</p>
+                             <p className="text-[10px] font-black text-slate-500 uppercase mb-4 flex items-center gap-2"><Clock className="w-3 h-3 text-rose-500" /> 已佔用桌位列表</p>
                              <div className="space-y-2">
                                {Array.from(occupiedTableDetails.entries()).map(([table, detail]) => (
-                                 <div key={table} className="flex justify-between items-center bg-white px-4 py-2.5 rounded-2xl shadow-sm border border-slate-100">
+                                 <div key={table} className="flex justify-between items-center bg-white px-4 py-2.5 rounded-2xl shadow-sm border border-slate-50">
                                     <div className="flex items-center gap-2">
                                        <span className="font-black text-xs text-slate-700">{table}</span>
                                        <div className="h-3 w-px bg-slate-200"></div>
@@ -483,7 +483,7 @@ function App() {
 
                       <button onClick={handleSaveReservation} disabled={isSyncingToCloud} className="w-full bg-slate-900 text-white py-5 rounded-[28px] font-black text-lg flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50 transition-all shadow-xl">
                         {isSyncingToCloud ? <Loader2 className="w-6 h-6 animate-spin text-orange-500" /> : <Save className="w-6 h-6" />}
-                        {isSyncingToCloud ? '正在同步雲端...' : '儲存並同步到試算表'}
+                        {isSyncingToCloud ? '同步數據中...' : '儲存並同步到試算表'}
                       </button>
                   </div>
               </div>
