@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox, RefreshCw, Loader2, X, Save, Globe, FileSpreadsheet, Database, ClipboardList, CheckCircle2, AlertCircle, Info, UserCheck, MessageSquare, Clock, ShieldAlert, CheckCircle, Ban, CalendarDays, Pencil } from 'lucide-react';
+import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox, RefreshCw, Loader2, X, Save, Globe, FileSpreadsheet, Database, ClipboardList, CheckCircle2, AlertCircle, Info, UserCheck, MessageSquare, Clock, ShieldAlert, CheckCircle, Ban, CalendarDays, Pencil, ExternalLink } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import AnalysisCard from './components/AnalysisCard';
 import { AppView, Reservation, DataSource } from './types';
@@ -20,7 +20,7 @@ function App() {
   const [isSyncingToCloud, setIsSyncingToCloud] = useState(false);
   const [syncProgress, setSyncProgress] = useState(0);
   
-  // 緩衝區：存儲剛修改過的資料，直到雲端確認更新完成
+  // 緩衝區與黑名單，用於處理同步延遲
   const [localModifiedBuffer, setLocalModifiedBuffer] = useState<Map<string, Reservation>>(new Map());
   const [syncBlacklist, setSyncBlacklist] = useState<{name: string, date: string, time: string}[]>([]);
   
@@ -50,6 +50,8 @@ function App() {
   const [syncingAll, setSyncingAll] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
+  const activeSource = dataSources[0];
+
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_RESERVATIONS, JSON.stringify(reservations.slice(0, 500)));
   }, [reservations]);
@@ -64,8 +66,9 @@ function App() {
     return hrs * 60 + (mins || 0);
   };
 
-  const { slotConflicts, occupiedTables } = useMemo(() => {
-    if (!isModalOpen || !form.date || !form.time) return { slotConflicts: [], occupiedTables: new Set<string>() };
+  // 桌位佔用狀態分析：現在會記錄佔用者的姓名
+  const { slotConflicts, occupiedTableMap } = useMemo(() => {
+    if (!isModalOpen || !form.date || !form.time) return { slotConflicts: [], occupiedTableMap: new Map<string, string>() };
     const currentSource = editingReservation ? dataSources.find(s => s.id === editingReservation.sourceId) : dataSources[0];
     const duration = currentSource?.diningDuration || 90;
     const startMins = timeToMinutes(form.time);
@@ -81,13 +84,13 @@ function App() {
       return (startMins < resEnd) && (endMins > resStart);
     });
 
-    const occupied = new Set<string>();
+    const tableMap = new Map<string, string>();
     conflicts.forEach(c => {
       const tables = (c.table || '').split(', ').filter(Boolean);
-      tables.forEach(t => occupied.add(t));
+      tables.forEach(t => tableMap.set(t, c.customerName));
     });
 
-    return { slotConflicts: conflicts, occupiedTables: occupied };
+    return { slotConflicts: conflicts, occupiedTableMap: tableMap };
   }, [isModalOpen, form.date, form.time, reservations, dataSources, editingReservation]);
 
   const syncToGoogleSheet = async (payload: any) => {
@@ -103,6 +106,7 @@ function App() {
       });
       return true;
     } catch (e) {
+      console.error("Sync Error:", e);
       return false;
     }
   };
@@ -121,35 +125,26 @@ function App() {
         }
 
         setReservations(prev => {
-          // 核心邏輯：過濾並處理緩衝區資料
           const newProcessedRemote = allRemote.filter(r => {
-            // 1. 黑名單檢查 (已刪除的資料)
             const isBlacklisted = syncBlacklist.some(d => d.name === r.customerName.trim() && d.date === r.date && r.time.substring(0,5) === d.time);
             if (isBlacklisted) return false;
 
-            // 2. 緩衝區檢查 (剛修改的資料)
-            // 識別碼使用：姓名 + 日期 + 時間
             const key = `${r.customerName.trim()}_${r.date}_${r.time.substring(0,5)}`;
             const buffered = localModifiedBuffer.get(key);
             
             if (buffered) {
-              // 如果雲端資料跟緩衝區的人數/桌號/備註還不一致，說明雲端還沒更新，排除這筆雲端資料
               const isConsistent = 
                 buffered.pax === r.pax && 
                 buffered.table === r.table && 
                 buffered.notes === r.notes &&
                 buffered.type === r.type &&
                 buffered.phone === r.phone;
-              
-              if (!isConsistent) return false; // 排除不一致的雲端「舊」資料
+              if (!isConsistent) return false; 
             }
             return true;
           });
 
-          // 獲取目前本地獨有的資料 (包含正在緩衝的)
           const currentLocalOnly = prev.filter(p => p.isLocal);
-          
-          // 合併：本地資料 + 處理後的雲端資料
           const merged = [...currentLocalOnly];
           newProcessedRemote.forEach(remote => {
             const exists = merged.some(m => 
@@ -159,7 +154,6 @@ function App() {
             );
             if (!exists) merged.push(remote);
           });
-
           return merged;
         });
         
@@ -195,7 +189,6 @@ function App() {
     const tableString = selectedTables.sort().join(', ');
     const now = Date.now();
     
-    // 建立新資料物件
     const resPayload: Reservation = { 
       id: editingReservation ? editingReservation.id : `local-${now}`,
       customerName: (form.customerName || '').trim(),
@@ -219,18 +212,13 @@ function App() {
         date: editingReservation.date, 
         time: editingReservation.time.substring(0, 5) 
       };
-      
-      // 更新緩衝區：讓 App 知道這筆資料處於「更新中」狀態
       const bufferKey = `${resPayload.customerName.trim()}_${resPayload.date}_${resPayload.time.substring(0,5)}`;
       setLocalModifiedBuffer(prev => new Map(prev).set(bufferKey, resPayload));
-      
-      // 本地狀態立即反應
       setReservations(prev => prev.map(r => r.id === editingReservation.id ? resPayload : r));
     } else {
       setReservations(prev => [resPayload, ...prev]);
     }
 
-    // 發送覆蓋指令：包含舊識別資訊與新數據
     const success = await syncToGoogleSheet({
       action: editingReservation ? 'update' : 'create',
       oldName: oldInfo?.name,
@@ -241,19 +229,10 @@ function App() {
     
     if (success) {
       setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'synced', isLocal: true } : r));
-      // 成功後立即觸發一次同步確認
       setTimeout(() => handleSyncAll(true), 3000);
-      
-      // 5分鐘後自動清除緩衝，這是一個安全網
       if (editingReservation) {
         const bufferKey = `${resPayload.customerName.trim()}_${resPayload.date}_${resPayload.time.substring(0,5)}`;
-        setTimeout(() => {
-          setLocalModifiedBuffer(prev => {
-            const next = new Map(prev);
-            next.delete(bufferKey);
-            return next;
-          });
-        }, 300000);
+        setTimeout(() => setLocalModifiedBuffer(prev => { const next = new Map(prev); next.delete(bufferKey); return next; }), 300000);
       }
     }
     
@@ -266,33 +245,43 @@ function App() {
   const handleDeleteReservation = async (res: Reservation) => {
     const primarySource = dataSources.find(s => s.writeUrl && s.writeUrl.includes('/exec'));
     if (!primarySource) return alert("請先設定 Apps Script 寫入網址。");
-    if (!confirm(`確定要徹底刪除「${res.customerName}」嗎？`)) return;
+    if (!confirm(`確定要徹底刪除「${res.customerName}」嗎？\n此動作將會同步刪除雲端試算表上的資料。`)) return;
     
     const deleteInfo = { name: res.customerName.trim(), date: res.date, time: res.time.substring(0,5) };
+    
+    // 先在本地排除此資料
     setSyncBlacklist(prev => [...prev, deleteInfo]);
     setReservations(prev => prev.filter(r => r.id !== res.id));
     
     setIsSyncingToCloud(true);
-    const success = await syncToGoogleSheet({ action: 'delete', oldName: deleteInfo.name, oldDate: deleteInfo.date, oldTime: deleteInfo.time });
+    // 發送刪除指令，包含更詳細的識別資訊以防誤刪
+    const success = await syncToGoogleSheet({ 
+      action: 'delete', 
+      oldName: deleteInfo.name, 
+      oldDate: deleteInfo.date, 
+      oldTime: deleteInfo.time,
+      type: res.type,
+      phone: res.phone
+    });
     setIsSyncingToCloud(false);
 
     if (success) {
-      setTimeout(() => handleSyncAll(true), 4000);
+      // 刪除後不立即同步，等雲端完成
+      setTimeout(() => handleSyncAll(true), 5000);
       setTimeout(() => setSyncBlacklist(prev => prev.filter(d => d !== deleteInfo)), 600000);
+    } else {
+      alert("同步刪除失敗，請檢查 Apps Script 權限。");
     }
   };
 
   const handleTableToggle = (table: string) => {
-    if (occupiedTables.has(table)) return;
+    if (occupiedTableMap.has(table)) return;
     setSelectedTables(prev => prev.includes(table) ? prev.filter(t => t !== table) : [...prev, table]);
   };
 
   const filteredReservations = useMemo(() => {
     const s = searchTerm.toLowerCase();
-    return reservations.filter(r => {
-      // 搜尋過濾
-      return (r.customerName && r.customerName.toLowerCase().includes(s)) || (r.phone && r.phone.includes(s));
-    });
+    return reservations.filter(r => (r.customerName && r.customerName.toLowerCase().includes(s)) || (r.phone && r.phone.includes(s)));
   }, [reservations, searchTerm]);
 
   const groupedRes = useMemo(() => {
@@ -322,9 +311,20 @@ function App() {
           {currentView === AppView.RESERVATIONS ? (
             <div className="space-y-6">
               <div className="flex justify-between items-end">
-                <div>
+                <div className="space-y-1">
                   <h1 className="text-2xl font-black text-slate-800 tracking-tight">訂位管理戰情室</h1>
-                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Google Sheet 即時連線中</p>
+                  {activeSource && (
+                    <a 
+                      href={activeSource.url.split('/export')[0]} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-orange-600 hover:text-orange-700 font-bold text-[11px] bg-orange-50 px-2 py-1 rounded-md transition-colors"
+                    >
+                      <FileSpreadsheet className="w-3 h-3" />
+                      連線中：{activeSource.name}
+                      <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                  )}
                 </div>
                 <div className="flex gap-2">
                   <button onClick={() => handleSyncAll()} disabled={syncingAll} className="p-3 bg-white border rounded-2xl text-xs font-black shadow-sm flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50">
@@ -422,7 +422,6 @@ function App() {
                   <h1 className="text-4xl font-black relative z-10">資料來源設定</h1>
                   <p className="text-slate-400 mt-2 relative z-10 font-bold">設定 Google 試算表 CSV 下載與 Apps Script 網址。</p>
                </div>
-               {/* 略過設定部分，維持原樣 */}
                <div className="bg-white rounded-[40px] shadow-xl border p-8 space-y-6">
                   <h3 className="font-black text-slate-800 text-xl flex items-center gap-2"><Globe className="text-orange-600" /> 連線設定</h3>
                   <div className="space-y-4">
@@ -438,9 +437,9 @@ function App() {
                       setLoadingSource(true);
                       const sId = Date.now().toString();
                       fetchCsvStreaming(newUrl, () => {}).then(csv => mapReservationsCSVAsync(csv, sId)).then(data => {
-                          setDataSources([...dataSources, { 
+                          setDataSources([{ 
                             id: sId, 
-                            name: newName || '新店鋪', 
+                            name: newName || '預設店鋪', 
                             url: newUrl, 
                             writeUrl: newWriteUrl, 
                             type: 'RESERVATIONS', 
@@ -448,7 +447,7 @@ function App() {
                             status: 'ACTIVE', 
                             diningDuration: newDuration 
                           }]);
-                          setReservations(prev => [...data, ...prev]);
+                          setReservations(data);
                           setCurrentView(AppView.RESERVATIONS);
                       }).finally(() => setLoadingSource(false));
                   }} disabled={loadingSource} className="w-full bg-orange-600 text-white py-5 rounded-3xl font-black text-lg transition-all active:scale-95 disabled:opacity-50 shadow-xl shadow-orange-500/20">
@@ -469,7 +468,6 @@ function App() {
                     <button onClick={() => !isSyncingToCloud && setIsModalOpen(false)}><X className="w-7 h-7" /></button>
                   </div>
                   <div className="p-8 space-y-6 max-h-[80vh] overflow-y-auto custom-scrollbar">
-                      {/* 表單內容維持原樣，但 Save 按鈕會觸發新的 handleSaveReservation */}
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1">
                           <label className="text-[10px] font-black text-slate-400 uppercase ml-1">填單人</label>
@@ -507,17 +505,29 @@ function App() {
                       </div>
                       
                       <div className="space-y-4">
-                        <label className="text-[10px] font-black text-slate-400 uppercase ml-1">桌號分配 (點擊選取)</label>
+                        <div className="flex justify-between items-center">
+                          <label className="text-[10px] font-black text-slate-400 uppercase ml-1">桌號分配 (點擊選取)</label>
+                          <span className="text-[10px] font-bold text-slate-400">目前時段：{form.time}</span>
+                        </div>
                         <div className="grid grid-cols-4 gap-2">
                           {TABLE_OPTIONS.map(t => {
-                            const isOccupied = occupiedTables.has(t);
+                            const occupiedByName = occupiedTableMap.get(t);
+                            const isOccupied = !!occupiedByName;
                             const isSelected = selectedTables.includes(t);
                             return (
-                              <button key={t} onClick={() => handleTableToggle(t)} disabled={isOccupied} className={`py-3 rounded-xl border text-[11px] font-black transition-all ${
-                                isSelected ? 'bg-indigo-600 text-white border-indigo-600' : 
-                                isOccupied ? 'bg-rose-50 text-rose-200 border-rose-100 cursor-not-allowed' : 
-                                'bg-slate-50 text-slate-500 border-slate-100 hover:border-slate-300'
-                              }`}>{t}</button>
+                              <button 
+                                key={t} 
+                                onClick={() => handleTableToggle(t)} 
+                                disabled={isOccupied} 
+                                className={`py-3 px-1 rounded-xl border flex flex-col items-center justify-center gap-0.5 transition-all min-h-[54px] ${
+                                  isSelected ? 'bg-indigo-600 text-white border-indigo-600' : 
+                                  isOccupied ? 'bg-rose-50 text-rose-300 border-rose-100 cursor-not-allowed' : 
+                                  'bg-slate-50 text-slate-500 border-slate-100 hover:border-slate-300'
+                                }`}
+                              >
+                                <span className="text-[11px] font-black leading-none">{t}</span>
+                                {isOccupied && <span className="text-[8px] font-bold opacity-70 line-clamp-1">{occupiedByName}</span>}
+                              </button>
                             );
                           })}
                         </div>
