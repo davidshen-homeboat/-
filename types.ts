@@ -25,6 +25,7 @@ export interface DataSource {
   type: DataType;
   lastUpdated: string;
   status: 'ACTIVE' | 'ERROR';
+  diningDuration: number; // In minutes, custom for each shop
 }
 
 export enum AppView {
