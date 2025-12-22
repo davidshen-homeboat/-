@@ -19,8 +19,8 @@ function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSyncingToCloud, setIsSyncingToCloud] = useState(false);
   
-  // 防止剛刪除的資料在 Sheet 還沒同步完成前被撈回
-  const [syncBlacklist, setSyncBlacklist] = useState<string[]>([]); 
+  // 記錄已刪除或已修改的舊資料特徵，防止從 CSV 中「復活」
+  const [syncBlacklist, setSyncBlacklist] = useState<Set<string>>(new Set());
   
   const [reservations, setReservations] = useState<Reservation[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_RESERVATIONS);
@@ -56,17 +56,17 @@ function App() {
     localStorage.setItem(STORAGE_KEY_SOURCES, JSON.stringify(dataSources));
   }, [dataSources]);
 
-  // 生成 8 欄位唯一特徵碼
-  const getSignature = (res: Reservation | Partial<Reservation>) => {
+  // 生成與 Google Sheet 後端邏輯完全一致的 8 欄位特徵碼 (用於本地排除)
+  const getSignature = (res: any) => {
     return [
-      res.date || '',
-      res.type || '',
-      (res.time || '').substring(0, 5),
-      (res.pax || 0).toString(),
-      (res.customerName || '').trim(),
-      (res.phone || '').trim(),
-      (res.table || '').trim(),
-      (res.notes || '').trim()
+      (res.date || '').toString().trim(),
+      (res.type || '').toString().trim(),
+      (res.time || '').toString().substring(0, 5),
+      (res.pax || '').toString().trim(),
+      (res.customerName || '').toString().trim(),
+      (res.phone || '').toString().trim(),
+      (res.table || '').toString().trim(),
+      (res.notes || '').toString().trim()
     ].join('|');
   };
 
@@ -74,15 +74,16 @@ function App() {
     const targetSource = dataSources.find(s => s.id === sourceId);
     if (!targetSource?.writeUrl) return false;
     try {
+      // 使用 text/plain 以避免複雜的 CORS 預檢請求
       await fetch(targetSource.writeUrl.trim(), {
         method: 'POST',
-        mode: 'no-cors',
+        mode: 'no-cors', 
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload)
       });
       return true;
     } catch (e) {
-      console.error("Sync Error", e);
+      console.error("Cloud Sync failed", e);
       return false;
     }
   };
@@ -101,7 +102,8 @@ function App() {
         }
 
         setReservations(prev => {
-          const processedRemote = allRemote.filter(r => !syncBlacklist.includes(getSignature(r)));
+          // 過濾掉還在黑名單中的舊資料（給 Sheet 快取更新的時間）
+          const processedRemote = allRemote.filter(r => !syncBlacklist.has(getSignature(r)));
           const localOnly = prev.filter(p => p.isLocal && !processedRemote.some(r => r.customerName === p.customerName && r.date === p.date && r.time === p.time));
           return [...localOnly, ...processedRemote];
         });
@@ -110,7 +112,7 @@ function App() {
   };
 
   const handleSaveReservation = async () => {
-    if (!form.customerName || !form.date || selectedTables.length === 0) return alert('請填寫完整姓名與桌號');
+    if (!form.customerName || !form.date || selectedTables.length === 0) return alert('請完整輸入顧客姓名與分配桌號');
 
     setIsSyncingToCloud(true);
     const tableString = selectedTables.sort().join(', ');
@@ -132,9 +134,16 @@ function App() {
       sourceId: targetSourceId
     };
 
-    let syncPayload: any = { action: editingReservation ? 'update' : 'create', ...resPayload };
+    let syncPayload: any = { 
+      action: editingReservation ? 'update' : 'create', 
+      ...resPayload 
+    };
 
     if (editingReservation) {
+      // 關鍵：將舊資料標記為黑名單，直到下次同步
+      const oldSig = getSignature(editingReservation);
+      setSyncBlacklist(prev => new Set(prev).add(oldSig));
+
       syncPayload = {
         ...syncPayload,
         oldDate: editingReservation.date,
@@ -155,23 +164,25 @@ function App() {
     
     if (success) {
       setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'synced' } : r));
-      setTimeout(() => handleSyncAll(true), 5000);
+      // 延長延遲時間至 8 秒，確保 Google Sheet 完成儲存
+      setTimeout(() => handleSyncAll(true), 8000);
     }
+    
     setIsSyncingToCloud(false);
     setIsModalOpen(false);
     setEditingReservation(null);
   };
 
   const handleDeleteReservation = async (res: Reservation) => {
-    if (!confirm(`確定要刪除「${res.customerName}」的訂位嗎？`)) return;
+    if (!confirm(`確定要從雲端試算表中永久刪除「${res.customerName}」嗎？`)) return;
     
-    const signature = getSignature(res);
-    setSyncBlacklist(prev => [...prev, signature]);
+    const sig = getSignature(res);
+    setSyncBlacklist(prev => new Set(prev).add(sig));
     setReservations(prev => prev.filter(r => r.id !== res.id));
     
     setIsSyncingToCloud(true);
     
-    // 刪除時發送完整的 8 欄位舊資料特徵
+    // 發送 8 個 old 欄位，後端腳本會依此進行精確刪除
     const success = await syncToGoogleSheet({ 
       action: 'delete', 
       oldDate: res.date,
@@ -187,11 +198,18 @@ function App() {
     setIsSyncingToCloud(false);
 
     if (success) {
-      setTimeout(() => handleSyncAll(true), 6000);
-      // 10 分鐘後解除黑名單，確保 Sheet 的快取已更新
-      setTimeout(() => setSyncBlacklist(prev => prev.filter(sig => sig !== signature)), 600000);
+      // 延遲更新，讓 CSV 快取有時間重新生成
+      setTimeout(() => handleSyncAll(true), 10000);
+      // 15 分鐘後再從黑名單移除，保險起見
+      setTimeout(() => {
+        setSyncBlacklist(prev => {
+          const next = new Set(prev);
+          next.delete(sig);
+          return next;
+        });
+      }, 900000);
     } else {
-      alert("同步刪除失敗，請檢查網路或 Apps Script 設定。");
+      alert("刪除請求發送失敗，請確認 Apps Script 連結。");
     }
   };
 
@@ -203,18 +221,19 @@ function App() {
   };
 
   const handleAddSource = () => {
-    if (!newUrl || !newWriteUrl) return alert("資訊不全");
+    if (!newUrl || !newWriteUrl) return alert("請填寫完整的 CSV 與 Apps Script 連結");
     setLoadingSource(true);
     const sId = `ds-${Date.now()}`;
     fetchCsvStreaming(newUrl, () => {}).then(csv => mapReservationsCSVAsync(csv, sId, () => {})).then(data => {
         const newSource: DataSource = { 
-          id: sId, name: newName || `分店 ${dataSources.length + 1}`, url: newUrl, writeUrl: newWriteUrl, 
+          id: sId, name: newName || `來源 ${dataSources.length + 1}`, url: newUrl, writeUrl: newWriteUrl, 
           type: 'RESERVATIONS', lastUpdated: new Date().toLocaleString(), status: 'ACTIVE', diningDuration: newDuration 
         };
         setDataSources(prev => [...prev, newSource]);
         setReservations(prev => [...data, ...prev]);
         setNewUrl(''); setNewWriteUrl(''); setNewName('');
-    }).finally(() => setLoadingSource(false));
+    }).catch(() => alert("連結失敗，請檢查 URL 是否正確且已公開"))
+    .finally(() => setLoadingSource(false));
   };
 
   const timeToMinutes = (timeStr: string) => {
@@ -366,7 +385,7 @@ function App() {
                   <h3 className="font-black text-slate-800 text-xl flex items-center gap-2"><Globe className="text-orange-600" /> 連結新分店 Sheet</h3>
                   <div className="space-y-4">
                     <input type="text" value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="分店名稱" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
-                    <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="CSV 匯出連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                    <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="CSV 匯出連結 (網頁發佈)" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
                     <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script 執行連結 (/exec)" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
                   </div>
                   <button onClick={handleAddSource} disabled={loadingSource} className="w-full bg-slate-900 text-white py-5 rounded-3xl font-black text-lg transition-all active:scale-95 disabled:opacity-50">
@@ -383,7 +402,7 @@ function App() {
               <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xl" onClick={() => !isSyncingToCloud && setIsModalOpen(false)}></div>
               <div className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl relative z-10 overflow-hidden animate-in zoom-in duration-200">
                   <div className="bg-orange-600 p-6 text-white flex justify-between items-center">
-                    <h2 className="text-xl font-black">{editingReservation ? '修改資料' : '快速預約'}</h2>
+                    <h2 className="text-xl font-black">{editingReservation ? '編輯內容' : '快速預約'}</h2>
                     <button onClick={() => !isSyncingToCloud && setIsModalOpen(false)}><X className="w-7 h-7" /></button>
                   </div>
                   <div className="p-8 space-y-6 max-h-[80vh] overflow-y-auto custom-scrollbar">
@@ -396,13 +415,13 @@ function App() {
                         <input type="time" value={form.time} onChange={e => setForm({...form, time: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
                       </div>
                       <div className="grid grid-cols-2 gap-4">
-                        <input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="姓名" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
-                        <input type="number" value={form.pax} onChange={e => setForm({...form, pax: parseInt(e.target.value) || 1})} placeholder="人數" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
+                        <input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="顧客大名" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
+                        <input type="number" value={form.pax} onChange={e => setForm({...form, pax: parseInt(e.target.value) || 1})} placeholder="用餐人數" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
                       </div>
-                      <input type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="聯絡電話" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500" />
+                      <input type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="聯絡手機" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500" />
                       
                       <div className="space-y-4">
-                        <div className="flex justify-between items-center"><label className="text-[10px] font-black text-slate-400 uppercase">桌位分配 (可多選)</label></div>
+                        <div className="flex justify-between items-center"><label className="text-[10px] font-black text-slate-400 uppercase">桌位分配 (可複選)</label></div>
                         <div className="grid grid-cols-4 gap-2">
                           {TABLE_OPTIONS.map(t => {
                             const isOccupied = occupiedTableDetails.has(t);
@@ -418,11 +437,11 @@ function App() {
                         </div>
                       </div>
 
-                      <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none min-h-[100px] focus:ring-2 focus:ring-orange-500" placeholder="備註說明..."></textarea>
+                      <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none min-h-[100px] focus:ring-2 focus:ring-orange-500" placeholder="備註特殊需求..."></textarea>
 
                       <button onClick={handleSaveReservation} disabled={isSyncingToCloud} className="w-full bg-slate-900 text-white py-5 rounded-[28px] font-black text-lg flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50 transition-all shadow-xl">
                         {isSyncingToCloud ? <Loader2 className="w-6 h-6 animate-spin text-orange-500" /> : <Save className="w-6 h-6" />}
-                        {isSyncingToCloud ? '同步至試算表中...' : '儲存資料'}
+                        {isSyncingToCloud ? '同步雲端資料庫中...' : '確認並存檔'}
                       </button>
                   </div>
               </div>
