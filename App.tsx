@@ -62,10 +62,10 @@ function App() {
       res.date || '',
       res.type || '',
       (res.time || '').substring(0, 5),
-      res.pax || 0,
+      (res.pax || 0).toString(),
       (res.customerName || '').trim(),
       (res.phone || '').trim(),
-      res.table || '',
+      (res.table || '').trim(),
       (res.notes || '').trim()
     ].join('|');
   };
@@ -74,7 +74,7 @@ function App() {
     const targetSource = dataSources.find(s => s.id === sourceId);
     if (!targetSource?.writeUrl) return false;
     try {
-      const response = await fetch(targetSource.writeUrl.trim(), {
+      await fetch(targetSource.writeUrl.trim(), {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -101,7 +101,6 @@ function App() {
         }
 
         setReservations(prev => {
-          // 排除掉在黑名單中的資料（那些剛刪除但 Sheet 可能還沒反應過來的資料）
           const processedRemote = allRemote.filter(r => !syncBlacklist.includes(getSignature(r)));
           const localOnly = prev.filter(p => p.isLocal && !processedRemote.some(r => r.customerName === p.customerName && r.date === p.date && r.time === p.time));
           return [...localOnly, ...processedRemote];
@@ -111,7 +110,7 @@ function App() {
   };
 
   const handleSaveReservation = async () => {
-    if (!form.customerName || !form.date || selectedTables.length === 0) return alert('請完整填寫');
+    if (!form.customerName || !form.date || selectedTables.length === 0) return alert('請填寫完整姓名與桌號');
 
     setIsSyncingToCloud(true);
     const tableString = selectedTables.sort().join(', ');
@@ -136,13 +135,12 @@ function App() {
     let syncPayload: any = { action: editingReservation ? 'update' : 'create', ...resPayload };
 
     if (editingReservation) {
-      // 修改時，傳送 8 個舊欄位讓後端尋找並刪除舊行
       syncPayload = {
         ...syncPayload,
         oldDate: editingReservation.date,
         oldType: editingReservation.type,
         oldTime: editingReservation.time.substring(0, 5),
-        oldPax: editingReservation.pax,
+        oldPax: editingReservation.pax.toString(),
         oldName: editingReservation.customerName,
         oldPhone: editingReservation.phone,
         oldTable: editingReservation.table,
@@ -157,7 +155,6 @@ function App() {
     
     if (success) {
       setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'synced' } : r));
-      // 等待 5 秒讓 Sheet 寫入完成再更新，避免太快抓回舊資料
       setTimeout(() => handleSyncAll(true), 5000);
     }
     setIsSyncingToCloud(false);
@@ -166,7 +163,7 @@ function App() {
   };
 
   const handleDeleteReservation = async (res: Reservation) => {
-    if (!confirm(`確定要將此訂位從試算表徹底刪除嗎？`)) return;
+    if (!confirm(`確定要刪除「${res.customerName}」的訂位嗎？`)) return;
     
     const signature = getSignature(res);
     setSyncBlacklist(prev => [...prev, signature]);
@@ -174,13 +171,13 @@ function App() {
     
     setIsSyncingToCloud(true);
     
-    // 刪除時統一使用 old 前綴或一般欄位，我們在後端腳本中做兼容
+    // 刪除時發送完整的 8 欄位舊資料特徵
     const success = await syncToGoogleSheet({ 
       action: 'delete', 
       oldDate: res.date,
       oldType: res.type,
       oldTime: res.time.substring(0, 5),
-      oldPax: res.pax,
+      oldPax: res.pax.toString(),
       oldName: res.customerName,
       oldPhone: res.phone,
       oldTable: res.table,
@@ -190,12 +187,11 @@ function App() {
     setIsSyncingToCloud(false);
 
     if (success) {
-      // 延遲更新，給 Google Sheet 呼吸的時間
       setTimeout(() => handleSyncAll(true), 6000);
-      // 10 分鐘後解除黑名單
+      // 10 分鐘後解除黑名單，確保 Sheet 的快取已更新
       setTimeout(() => setSyncBlacklist(prev => prev.filter(sig => sig !== signature)), 600000);
     } else {
-      alert("刪除失敗，請重新整理頁面再試一次。");
+      alert("同步刪除失敗，請檢查網路或 Apps Script 設定。");
     }
   };
 
@@ -369,9 +365,9 @@ function App() {
                <div className="bg-white rounded-[40px] shadow-xl border p-8 space-y-6">
                   <h3 className="font-black text-slate-800 text-xl flex items-center gap-2"><Globe className="text-orange-600" /> 連結新分店 Sheet</h3>
                   <div className="space-y-4">
-                    <input type="text" value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="分店名稱" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" />
-                    <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="CSV 匯出連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" />
-                    <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script 執行連結 (/exec)" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold" />
+                    <input type="text" value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="分店名稱" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                    <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="CSV 匯出連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                    <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script 執行連結 (/exec)" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
                   </div>
                   <button onClick={handleAddSource} disabled={loadingSource} className="w-full bg-slate-900 text-white py-5 rounded-3xl font-black text-lg transition-all active:scale-95 disabled:opacity-50">
                     {loadingSource ? <Loader2 className="animate-spin inline mr-2" /> : '確認並連線'}
@@ -392,8 +388,8 @@ function App() {
                   </div>
                   <div className="p-8 space-y-6 max-h-[80vh] overflow-y-auto custom-scrollbar">
                       <div className="grid grid-cols-2 gap-4">
-                        <select value={form.creator} onChange={e => setForm({...form, creator: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none">{CREATOR_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}</select>
-                        <select value={form.type} onChange={e => setForm({...form, type: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none">{TYPE_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}</select>
+                        <select value={form.creator} onChange={e => setForm({...form, creator: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500">{CREATOR_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}</select>
+                        <select value={form.type} onChange={e => setForm({...form, type: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500">{TYPE_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}</select>
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <input type="date" value={form.date} onChange={e => setForm({...form, date: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
@@ -403,17 +399,17 @@ function App() {
                         <input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="姓名" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
                         <input type="number" value={form.pax} onChange={e => setForm({...form, pax: parseInt(e.target.value) || 1})} placeholder="人數" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
                       </div>
-                      <input type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="聯絡電話" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
+                      <input type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="聯絡電話" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500" />
                       
                       <div className="space-y-4">
-                        <div className="flex justify-between items-center"><label className="text-[10px] font-black text-slate-400 uppercase">桌號分配</label></div>
+                        <div className="flex justify-between items-center"><label className="text-[10px] font-black text-slate-400 uppercase">桌位分配 (可多選)</label></div>
                         <div className="grid grid-cols-4 gap-2">
                           {TABLE_OPTIONS.map(t => {
                             const isOccupied = occupiedTableDetails.has(t);
                             const isSelected = selectedTables.includes(t);
                             return (
                               <button key={t} onClick={() => !isOccupied && setSelectedTables(prev => prev.includes(t) ? prev.filter(x=>x!==t) : [...prev, t])} disabled={isOccupied} className={`py-4 rounded-xl border flex flex-col items-center justify-center transition-all ${
-                                isSelected ? 'bg-indigo-600 text-white border-indigo-600' : isOccupied ? 'bg-slate-100 text-slate-300 border-slate-50 opacity-60' : 'bg-slate-50 text-slate-500 border-slate-100 hover:border-slate-300'
+                                isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md scale-105' : isOccupied ? 'bg-slate-100 text-slate-300 border-slate-50 opacity-60' : 'bg-slate-50 text-slate-500 border-slate-100 hover:border-slate-300'
                               }`}>
                                 <span className="text-xs font-black">{t}</span>
                               </button>
@@ -422,7 +418,7 @@ function App() {
                         </div>
                       </div>
 
-                      <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none min-h-[100px]" placeholder="備註說明..."></textarea>
+                      <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none min-h-[100px] focus:ring-2 focus:ring-orange-500" placeholder="備註說明..."></textarea>
 
                       <button onClick={handleSaveReservation} disabled={isSyncingToCloud} className="w-full bg-slate-900 text-white py-5 rounded-[28px] font-black text-lg flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50 transition-all shadow-xl">
                         {isSyncingToCloud ? <Loader2 className="w-6 h-6 animate-spin text-orange-500" /> : <Save className="w-6 h-6" />}
