@@ -6,8 +6,8 @@ import AnalysisCard from './components/AnalysisCard';
 import { AppView, Reservation, DataSource } from './types';
 import { mapReservationsCSVAsync, fetchCsvStreaming } from './services/dataProcessor';
 
-// 簽章版本，若結構變動則更新此值以清空舊黑名單
-const SIG_VERSION = 'v4'; 
+// 簽章版本升級，確保同步邏輯重置
+const SIG_VERSION = 'v5'; 
 const STORAGE_KEY_RESERVATIONS = 'bakery_reservations';
 const STORAGE_KEY_SOURCES = 'bakery_sources';
 const STORAGE_KEY_BLACKLIST = `bakery_sync_blacklist_${SIG_VERSION}`;
@@ -77,7 +77,7 @@ function App() {
         const next = { ...prev };
         let changed = false;
         Object.keys(next).forEach(key => {
-          if (now - next[key] > 900000) { 
+          if (now - next[key] > 1800000) { // 延長至 30 分鐘
             delete next[key];
             changed = true;
           }
@@ -90,7 +90,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_RESERVATIONS, JSON.stringify(reservations.slice(0, 1000)));
+    localStorage.setItem(STORAGE_KEY_RESERVATIONS, JSON.stringify(reservations.slice(0, 1500)));
   }, [reservations]);
 
   useEffect(() => {
@@ -133,28 +133,43 @@ function App() {
     if (dataSources.length === 0) return;
     if (!isSilent) setSyncingAll(true);
     setSyncError(null);
+
     try {
-        let allRemote: Reservation[] = [];
+        // 使用一個新的陣列來收集所有成功抓取的遠端資料
+        let newRemoteReservations: Reservation[] = [];
+        let failedSourceIds: string[] = [];
+
         for (const source of dataSources) {
             try {
               const csvText = await fetchCsvStreaming(source.url, () => {});
+              // 檢查 CSV 內容是否合法 (包含常見標題欄位)
+              if (!csvText.includes('姓名') && !csvText.includes('日期') && !csvText.includes('時間')) {
+                throw new Error("CSV 格式異常 (可能讀取到 Google 登入頁面)");
+              }
               const remoteData = await mapReservationsCSVAsync(csvText, source.id, () => {});
-              allRemote = [...allRemote, ...remoteData];
+              newRemoteReservations = [...newRemoteReservations, ...remoteData];
             } catch (err) { 
-              console.error(err); 
-              setSyncError(`無法讀取 ${source.name}，請檢查網路。`);
+              console.error(`Source ${source.name} 抓取失敗:`, err); 
+              failedSourceIds.push(source.id);
             }
         }
 
-        setReservations(prev => {
-          const processedRemote = allRemote.filter(r => !syncBlacklist[getSignature(r)]);
-          
-          // 修改合併邏輯：本地 pending 資料優先保留，直到雲端出現相同資料或超時
-          const localPending = prev.filter(p => p.isLocal && p.syncStatus === 'pending');
-          const localSyncedButRecent = prev.filter(p => p.isLocal && p.syncStatus === 'synced');
+        if (failedSourceIds.length > 0 && !isSilent) {
+          setSyncError(`部分分店連線失敗 (${failedSourceIds.length})，已保留原資料。`);
+        }
 
-          // 只過濾掉那些「已經在雲端出現」的本地暫存
-          const neededLocal = [...localPending, ...localSyncedButRecent].filter(p => 
+        setReservations(prev => {
+          // 1. 保留原本就在黑名單之外的「本地暫存」
+          const localOnly = prev.filter(p => p.isLocal);
+          
+          // 2. 處理遠端資料：過濾黑名單
+          const processedRemote = newRemoteReservations.filter(r => !syncBlacklist[getSignature(r)]);
+          
+          // 3. 處理失敗分店：從舊狀態中撈出失敗分店的舊資料，避免資料「消失」
+          const preservedOldFromFailedSources = prev.filter(p => !p.isLocal && p.sourceId && failedSourceIds.includes(p.sourceId));
+
+          // 4. 智慧合併：如果雲端已經有了對應的本地紀錄，則本地暫存可以移除
+          const pendingStillNeeded = localOnly.filter(p => 
             !processedRemote.some(r => 
               r.customerName === p.customerName && 
               r.date === p.date && 
@@ -162,11 +177,15 @@ function App() {
               r.table === p.table
             )
           );
-          
-          return [...neededLocal, ...processedRemote];
+
+          // 最終集合：仍在等待同步的本地紀錄 + 新抓取的遠端紀錄 + 因連線失敗而保留的舊遠端紀錄
+          return [...pendingStillNeeded, ...processedRemote, ...preservedOldFromFailedSources];
         });
         
-        setDataSources(prev => prev.map(s => ({...s, lastUpdated: new Date().toLocaleString(), status: 'ACTIVE'})));
+        setDataSources(prev => prev.map(s => {
+          if (failedSourceIds.includes(s.id)) return { ...s, status: 'ERROR' };
+          return { ...s, lastUpdated: new Date().toLocaleString(), status: 'ACTIVE' };
+        }));
     } finally { if (!isSilent) setSyncingAll(false); }
   };
 
@@ -184,7 +203,7 @@ function App() {
       customerName: (form.customerName || '').trim(),
       date: form.date || '',
       time: (form.time || '12:00').substring(0, 5),
-      pax: Number(form.pax) || 1,
+      pax: isTakeout ? 1 : (Number(form.pax) || 1),
       type: form.type || '內用',
       phone: (form.phone || '').trim(),
       table: tableString,
@@ -213,7 +232,8 @@ function App() {
     const success = await syncToGoogleSheet(syncPayload, targetSourceId);
     if (success) {
       setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'synced' } : r));
-      setTimeout(() => handleSyncAll(true), 15000);
+      // 縮短等待時間，配合快取破壞邏輯
+      setTimeout(() => handleSyncAll(true), 8000);
     } else {
       setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'failed' } : r));
     }
@@ -232,7 +252,7 @@ function App() {
     setIsSyncingToCloud(true);
     const success = await syncToGoogleSheet({ action: 'delete', oldDate: res.date, oldType: res.type, oldTime: res.time.substring(0, 5), oldPax: res.pax.toString(), oldName: res.customerName, oldPhone: res.phone, oldTable: res.table, oldNotes: res.notes }, res.sourceId);
     setIsSyncingToCloud(false);
-    if (success) setTimeout(() => handleSyncAll(true), 15000);
+    if (success) setTimeout(() => handleSyncAll(true), 10000);
   };
 
   const handleOpenEdit = (res: Reservation) => {
@@ -246,11 +266,14 @@ function App() {
     if (!newUrl || !newWriteUrl) return alert("資訊不齊全");
     setLoadingSource(true);
     const sId = `ds-${Date.now()}`;
-    fetchCsvStreaming(newUrl, () => {}).then(csv => mapReservationsCSVAsync(csv, sId, () => {})).then(data => {
+    fetchCsvStreaming(newUrl, () => {}).then(csv => {
+        if (!csv.includes('姓名')) throw new Error("無效的 CSV 連結");
+        return mapReservationsCSVAsync(csv, sId, () => {});
+    }).then(data => {
         setDataSources(prev => [...prev, { id: sId, name: newName || `分店 ${dataSources.length + 1}`, url: newUrl, writeUrl: newWriteUrl, type: 'RESERVATIONS', lastUpdated: new Date().toLocaleString(), status: 'ACTIVE', diningDuration: newDuration }]);
         setReservations(prev => [...data, ...prev]);
         setNewUrl(''); setNewName(''); setNewWriteUrl('');
-    }).catch(() => alert("連線失敗")).finally(() => setLoadingSource(false));
+    }).catch((e) => alert(e.message || "連線失敗")).finally(() => setLoadingSource(false));
   };
 
   const timeToMinutes = (timeStr: string) => {
@@ -354,9 +377,9 @@ function App() {
           {currentView === AppView.RESERVATIONS ? (
             <div className="space-y-6">
               {syncError && (
-                <div className="bg-rose-600 text-white px-6 py-3 rounded-2xl flex items-center justify-between shadow-lg animate-pulse">
+                <div className="bg-rose-600 text-white px-6 py-4 rounded-3xl flex items-center justify-between shadow-xl animate-in slide-in-from-top-4 duration-300">
                   <div className="flex items-center gap-3"><WifiOff className="w-5 h-5" /><span className="font-black text-sm">{syncError}</span></div>
-                  <button onClick={() => handleSyncAll()} className="p-1 hover:bg-white/20 rounded-lg"><RefreshCw className="w-4 h-4" /></button>
+                  <button onClick={() => handleSyncAll()} className="p-2 bg-white/20 hover:bg-white/30 rounded-xl"><RefreshCw className="w-4 h-4" /></button>
                 </div>
               )}
 
@@ -365,15 +388,15 @@ function App() {
                   <h1 className="text-3xl font-black text-slate-800 tracking-tight">訂位看板</h1>
                   <div className="flex flex-wrap gap-2">
                     {dataSources.map(ds => (
-                      <span key={ds.id} className="text-[10px] font-black uppercase tracking-widest bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200 shadow-sm">
-                        {ds.name} • 已連線
+                      <span key={ds.id} className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border shadow-sm transition-colors ${ds.status === 'ERROR' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                        {ds.name} • {ds.status === 'ERROR' ? '連線異常' : '已同步'}
                       </span>
                     ))}
                   </div>
                 </div>
                 <button onClick={() => handleSyncAll()} disabled={syncingAll} className="p-3 bg-white border rounded-2xl text-xs font-black shadow-sm flex items-center gap-2 active:scale-95 disabled:opacity-50 hover:bg-slate-50 transition-all">
                   {syncingAll ? <Loader2 className="animate-spin w-4 h-4 text-orange-500" /> : <RefreshCw className="text-orange-600 w-4 h-4" />}
-                  {syncingAll ? '智慧抓取中...' : '重新整理數據'}
+                  {syncingAll ? '智慧引擎同步中...' : '重新整理所有數據'}
                 </button>
               </div>
 
@@ -451,11 +474,11 @@ function App() {
 
                           <div className="pt-4 border-t border-black/5 flex justify-between items-center">
                             <div className="flex items-center gap-2 font-black text-base">
-                              {res.type === '外帶' ? <ShoppingBag className="w-5 h-5 opacity-40" /> : <Users className="w-5 h-5 opacity-40" />}
-                              {res.type === '外帶' ? '預計自取' : `${res.pax} 位 (${res.duration}m)`}
+                              {res.type === '外帶' ? <ShoppingBag className="w-5 h-5 opacity-40 text-indigo-600" /> : <Users className="w-5 h-5 opacity-40" />}
+                              {res.type === '外帶' ? '外帶自取' : `${res.pax} 位 (${res.duration}m)`}
                             </div>
                             <div className={`text-base font-black px-4 py-2 rounded-2xl shadow-lg ${res.type === '包場' ? 'bg-rose-600 text-white' : res.type === '外帶' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-white'}`}>
-                              {res.table || (res.type === '外帶' ? '🛍️ 外帶' : '待排')}
+                              {res.type === '外帶' ? '🛍️ 外帶' : (res.table || '待排')}
                             </div>
                           </div>
                         </div>
@@ -477,19 +500,22 @@ function App() {
                  {dataSources.map(ds => (
                    <div key={ds.id} className="bg-white rounded-[32px] shadow-sm border p-6 flex items-center justify-between group">
                       <div className="flex items-center gap-4">
-                         <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center text-emerald-600"><Database className="w-6 h-6" /></div>
-                         <div><h3 className="font-black text-slate-800 text-lg">{ds.name}</h3><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{ds.lastUpdated}</p></div>
+                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-colors ${ds.status === 'ERROR' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}><Database className="w-6 h-6" /></div>
+                         <div><h3 className="font-black text-slate-800 text-lg">{ds.name}</h3><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{ds.status === 'ERROR' ? '連線異常，請檢查連結' : ds.lastUpdated}</p></div>
                       </div>
-                      <button onClick={() => setDataSources(prev => prev.filter(s => s.id !== ds.id))} className="p-4 text-slate-300 hover:text-rose-500 rounded-2xl transition-all"><Unlink className="w-6 h-6" /></button>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => { setSyncingAll(true); handleSyncAll(); }} className="p-3 text-slate-400 hover:text-orange-500 rounded-xl"><RefreshCw className="w-5 h-5" /></button>
+                        <button onClick={() => setDataSources(prev => prev.filter(s => s.id !== ds.id))} className="p-3 text-slate-300 hover:text-rose-500 rounded-xl transition-all"><Unlink className="w-5 h-5" /></button>
+                      </div>
                    </div>
                  ))}
                </div>
                <div className="bg-white rounded-[40px] shadow-xl border p-8 space-y-6">
                   <h3 className="font-black text-slate-800 text-xl flex items-center gap-2"><Globe className="text-orange-600" /> 連結新資料源</h3>
                   <div className="space-y-4">
-                    <input type="text" value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="名稱 (例: 分店1)" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
-                    <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="CSV 匯出連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
-                    <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script API 連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                    <input type="text" value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="分店名稱" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                    <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="Google Sheets CSV 匯出連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                    <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script API 連結 (POST)" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
                   </div>
                   <button onClick={handleAddSource} disabled={loadingSource} className="w-full bg-slate-900 text-white py-5 rounded-3xl font-black text-lg transition-all active:scale-95 disabled:opacity-50">
                     {loadingSource ? <Loader2 className="animate-spin inline mr-2" /> : '立即連結'}
@@ -505,7 +531,7 @@ function App() {
               <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xl" onClick={() => !isSyncingToCloud && setIsModalOpen(false)}></div>
               <div className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl relative z-10 overflow-hidden animate-in zoom-in duration-200">
                   <div className="bg-orange-600 p-6 text-white flex justify-between items-center">
-                    <h2 className="text-xl font-black">{editingReservation ? '修改內容' : '快速新增'}</h2>
+                    <h2 className="text-xl font-black">{editingReservation ? '修改訂位內容' : '快速新增預約'}</h2>
                     <button onClick={() => !isSyncingToCloud && setIsModalOpen(false)} className="p-2 hover:bg-orange-700 rounded-xl transition-colors"><X className="w-7 h-7" /></button>
                   </div>
                   <div className="p-8 space-y-6 max-h-[85vh] overflow-y-auto custom-scrollbar">
@@ -531,7 +557,7 @@ function App() {
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="顧客姓名" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
-                        <input type="number" disabled={form.type === '外帶'} value={form.type === '外帶' ? 1 : form.pax} onChange={e => setForm({...form, pax: parseInt(e.target.value) || 1})} placeholder="人數" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none disabled:opacity-30" />
+                        <input type="number" disabled={form.type === '外帶'} value={form.type === '外帶' ? 1 : (form.pax || 1)} onChange={e => setForm({...form, pax: parseInt(e.target.value) || 1})} placeholder="人數" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none disabled:opacity-30" />
                       </div>
                       <input type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="聯絡電話" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500" />
                       
@@ -553,7 +579,7 @@ function App() {
                                 <CalendarDays className="w-3.5 h-3.5" />
                                 {selectedTimeSlotLabel}
                               </div>
-                              <span className="text-[10px] font-black text-indigo-400 uppercase tracking-tighter">系統自動計算衝突</span>
+                              <span className="text-[10px] font-black text-indigo-400 uppercase tracking-tighter">AI 桌況衝突偵測</span>
                             </div>
                           </div>
 
@@ -587,8 +613,8 @@ function App() {
                         <div className="bg-indigo-50 border border-indigo-100 p-6 rounded-[32px] flex items-center gap-4 animate-in zoom-in duration-300">
                           <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center text-indigo-600 shadow-sm"><ShoppingBag className="w-6 h-6" /></div>
                           <div>
-                            <h4 className="font-black text-indigo-900">外帶訂位模式</h4>
-                            <p className="text-xs text-indigo-600 font-bold">此模式不需要分配桌號，系統將自動標記為外帶自取單。</p>
+                            <h4 className="font-black text-indigo-900">外帶訂單模式</h4>
+                            <p className="text-xs text-indigo-600 font-bold">此模式已關閉桌位選擇與用餐人數。系統將自動標記為外帶自取單。</p>
                           </div>
                         </div>
                       )}
