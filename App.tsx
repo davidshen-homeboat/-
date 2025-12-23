@@ -6,7 +6,7 @@ import AnalysisCard from './components/AnalysisCard';
 import { AppView, Reservation, DataSource } from './types';
 import { mapReservationsCSVAsync, fetchCsvStreaming } from './services/dataProcessor';
 
-// 簽章版本升級至 v6，確保新的唯一識別邏輯生效
+// 簽章版本升級至 v6，確保新的唯一識別邏輯生效 (含桌號)
 const SIG_VERSION = 'v6'; 
 const STORAGE_KEY_RESERVATIONS = 'bakery_reservations';
 const STORAGE_KEY_SOURCES = 'bakery_sources';
@@ -38,9 +38,10 @@ function App() {
     return saved ? JSON.parse(saved) : [];
   });
   
-  const [form, setForm] = useState<Partial<Reservation>>({
+  // 人數設為 string 類型以便在手機端處理空白輸入
+  const [form, setForm] = useState<any>({
     date: new Date().toISOString().split('T')[0],
-    time: '12:00', pax: 2, type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90
+    time: '12:00', pax: '2', type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90
   });
 
   const [editingReservation, setEditingReservation] = useState<Reservation | null>(null);
@@ -75,7 +76,7 @@ function App() {
 
   useEffect(() => {
     if (isModalOpen && form.type === '包場') {
-      setForm(prev => ({ ...prev, duration: 240 }));
+      setForm((prev: any) => ({ ...prev, duration: 240 }));
       setSelectedTables([...TABLE_OPTIONS]);
     }
   }, [form.type, isModalOpen]);
@@ -138,10 +139,10 @@ function App() {
               const csvText = await fetchCsvStreaming(source.url, () => {});
               const remoteData = await mapReservationsCSVAsync(csvText, source.id, () => {});
               
-              // 防空保護機制：如果該分店原本有資料，但抓回來筆數驟降(低於原本的一半且筆數過少)，判定為異常
+              // 防空保護機制：如果該分店原本有資料，但抓回來筆數驟降，判定為異常
               const existingCount = reservations.filter(r => r.sourceId === source.id && !r.isLocal).length;
               if (existingCount > 5 && remoteData.length === 0) {
-                console.warn(`Source ${source.name} 回傳筆數異常減少，觸發防空機制。`);
+                console.warn(`Source ${source.name} 偵測到筆數異常歸零，觸發保護。`);
                 failedSourceIds.push(source.id);
               } else {
                 newRemoteReservations = [...newRemoteReservations, ...remoteData];
@@ -153,7 +154,7 @@ function App() {
         }
 
         if (failedSourceIds.length > 0 && !isSilent) {
-          setSyncError(`部分分店連線不穩，已啟動保護機制。`);
+          setSyncError(`偵測到連線不穩，已啟動保護機制。`);
         }
 
         setReservations(prev => {
@@ -186,12 +187,15 @@ function App() {
     const tableString = isTakeout ? '外帶' : selectedTables.sort().join(', ');
     const targetSourceId = editingReservation?.sourceId || dataSources[0]?.id;
 
+    // 將人數從 string 轉回 number，若為空白則設為 1
+    const finalPax = isTakeout ? 1 : (parseInt(form.pax?.toString() || '1') || 1);
+
     const resPayload: Reservation = { 
       id: editingReservation ? editingReservation.id : `local-${Date.now()}`,
       customerName: (form.customerName || '').trim(),
       date: form.date || '',
       time: (form.time || '12:00').substring(0, 5),
-      pax: isTakeout ? 1 : (Number(form.pax) || 1),
+      pax: finalPax,
       type: form.type || '內用',
       phone: (form.phone || '').trim(),
       table: tableString,
@@ -203,7 +207,6 @@ function App() {
       sourceId: targetSourceId
     };
 
-    // 精準比對：發送「完整」舊資料欄位，確保 Apps Script 端搜尋絕對精確
     let syncPayload: any = { action: editingReservation ? 'update' : 'create', ...resPayload };
 
     if (editingReservation) {
@@ -232,7 +235,7 @@ function App() {
     const success = await syncToGoogleSheet(syncPayload, targetSourceId);
     if (success) {
       setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'synced' } : r));
-      setTimeout(() => handleSyncAll(true), 6000);
+      setTimeout(() => handleSyncAll(true), 6500);
     } else {
       setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'failed' } : r));
     }
@@ -250,7 +253,6 @@ function App() {
     setReservations(prev => prev.filter(r => r.id !== res.id));
     setIsSyncingToCloud(true);
     
-    // 刪除也使用精準比對
     const success = await syncToGoogleSheet({ 
       action: 'delete', 
       oldDate: res.date, 
@@ -270,7 +272,7 @@ function App() {
 
   const handleOpenEdit = (res: Reservation) => {
     setEditingReservation(res);
-    setForm({ ...res, duration: res.duration || 90 });
+    setForm({ ...res, pax: res.pax.toString(), duration: res.duration || 90 });
     setSelectedTables((res.table || '').split(', ').filter(Boolean).filter(t => t !== '外帶'));
     setIsModalOpen(true);
   };
@@ -408,11 +410,10 @@ function App() {
                 </div>
                 <button onClick={() => handleSyncAll()} disabled={syncingAll} className="p-3 bg-white border rounded-2xl text-xs font-black shadow-sm flex items-center gap-2 active:scale-95 disabled:opacity-50 hover:bg-slate-50 transition-all">
                   {syncingAll ? <Loader2 className="animate-spin w-4 h-4 text-orange-500" /> : <RefreshCw className="text-orange-600 w-4 h-4" />}
-                  {syncingAll ? '數據更新中...' : '重新整理所有數據'}
+                  {syncingAll ? '更新中...' : '重新整理'}
                 </button>
               </div>
 
-              {/* 頂部：即時桌況摘要 */}
               <div className="bg-white rounded-[32px] border border-slate-200 p-6 shadow-sm">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
@@ -421,16 +422,12 @@ function App() {
                       即時桌況摘要 <span className="text-slate-400 font-bold ml-1">({new Date().toLocaleTimeString('zh-TW', {hour:'2-digit', minute:'2-digit'})})</span>
                     </h3>
                   </div>
-                  <div className="flex gap-4">
-                    <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div><span className="text-[10px] font-bold text-slate-500">空閒</span></div>
-                    <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-rose-500"></div><span className="text-[10px] font-bold text-slate-500">使用中</span></div>
-                  </div>
                 </div>
                 <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-12 gap-2">
                   {TABLE_OPTIONS.map(t => {
                     const occ = currentOccupancy.get(t);
                     return (
-                      <div key={t} className={`p-2 rounded-xl text-center border transition-all ${occ ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}>
+                      <div key={t} className={`p-2 rounded-xl text-center border transition-all ${occ ? 'bg-rose-50 border-rose-200 text-rose-600 shadow-sm' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}>
                         <div className="text-[10px] font-black">{t}</div>
                         <div className="text-[8px] font-bold mt-0.5 truncate">{occ ? occ.name : 'FREE'}</div>
                       </div>
@@ -474,9 +471,8 @@ function App() {
                           </div>
                           <h3 className="font-black text-xl mb-1 flex items-center gap-2">
                             {res.customerName}
-                            {res.type === '包場' && <ShieldAlert className="w-4 h-4 text-rose-500" />}
                           </h3>
-                          <div className="flex items-center gap-1.5 text-xs font-bold mb-4 opacity-70"><Phone className="w-3 h-3" /> {res.phone || '無電話紀錄'}</div>
+                          <div className="flex items-center gap-1.5 text-xs font-bold mb-4 opacity-70"><Phone className="w-3 h-3" /> {res.phone || '無電話'}</div>
                           
                           {res.notes && (
                             <div className="mb-4 p-3 rounded-2xl bg-black/5 text-sm font-medium leading-relaxed italic border-l-4 border-orange-400">
@@ -487,7 +483,7 @@ function App() {
                           <div className="pt-4 border-t border-black/5 flex justify-between items-center">
                             <div className="flex items-center gap-2 font-black text-base">
                               {res.type === '外帶' ? <ShoppingBag className="w-5 h-5 opacity-40 text-indigo-600" /> : <Users className="w-5 h-5 opacity-40" />}
-                              {res.type === '外帶' ? '外帶自取' : `${res.pax} 位 (${res.duration}m)`}
+                              {res.type === '外帶' ? '外帶' : `${res.pax} 位`}
                             </div>
                             <div className={`text-base font-black px-4 py-2 rounded-2xl shadow-lg ${res.type === '包場' ? 'bg-rose-600 text-white' : res.type === '外帶' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-white'}`}>
                               {res.type === '外帶' ? '🛍️ 外帶' : (res.table || '待排')}
@@ -499,10 +495,10 @@ function App() {
                   </div>
                 ))}
               </div>
-              <button onClick={() => { setEditingReservation(null); setForm({ date: new Date().toISOString().split('T')[0], time: '12:00', pax: 2, type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90 }); setSelectedTables([]); setIsModalOpen(true); }} className="fixed bottom-8 right-8 w-16 h-16 bg-orange-600 text-white rounded-3xl shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 z-40 transition-transform shadow-orange-200"><Plus className="w-10 h-10" /></button>
+              <button onClick={() => { setEditingReservation(null); setForm({ date: new Date().toISOString().split('T')[0], time: '12:00', pax: '2', type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90 }); setSelectedTables([]); setIsModalOpen(true); }} className="fixed bottom-8 right-8 w-16 h-16 bg-orange-600 text-white rounded-3xl shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 z-40 transition-transform shadow-orange-200"><Plus className="w-10 h-10" /></button>
             </div>
           ) : (
-             <div className="space-y-8">
+             <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
                <div className="p-10 bg-slate-900 rounded-[40px] text-white shadow-2xl relative overflow-hidden">
                   <h1 className="text-4xl font-black relative z-10">資料同步中心</h1>
                   <p className="text-slate-400 mt-2 relative z-10 font-bold">在此連結 Google 試算表，實現雲端數據串接。</p>
@@ -513,7 +509,7 @@ function App() {
                    <div key={ds.id} className="bg-white rounded-[32px] shadow-sm border p-6 flex items-center justify-between group">
                       <div className="flex items-center gap-4">
                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-colors ${ds.status === 'ERROR' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}><Database className="w-6 h-6" /></div>
-                         <div><h3 className="font-black text-slate-800 text-lg">{ds.name}</h3><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{ds.status === 'ERROR' ? '異常保護中，請重試' : ds.lastUpdated}</p></div>
+                         <div><h3 className="font-black text-slate-800 text-lg">{ds.name}</h3><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{ds.status === 'ERROR' ? '異常保護中' : ds.lastUpdated}</p></div>
                       </div>
                       <div className="flex items-center gap-2">
                         <button onClick={() => { setSyncingAll(true); handleSyncAll(); }} className="p-3 text-slate-400 hover:text-orange-500 rounded-xl"><RefreshCw className="w-5 h-5" /></button>
@@ -523,11 +519,11 @@ function App() {
                  ))}
                </div>
                <div className="bg-white rounded-[40px] shadow-xl border p-8 space-y-6">
-                  <h3 className="font-black text-slate-800 text-xl flex items-center gap-2"><Globe className="text-orange-600" /> 連結新分店數據</h3>
+                  <h3 className="font-black text-slate-800 text-xl flex items-center gap-2"><Globe className="text-orange-600" /> 連結新分店</h3>
                   <div className="space-y-4">
                     <input type="text" value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="分店名稱" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
-                    <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="Google Sheets CSV 連結 (共用匯出)" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
-                    <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script Web App 連結 (處理寫入)" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                    <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="Google Sheets CSV 連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                    <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script API 連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
                   </div>
                   <button onClick={handleAddSource} disabled={loadingSource} className="w-full bg-slate-900 text-white py-5 rounded-3xl font-black text-lg transition-all active:scale-95 disabled:opacity-50">
                     {loadingSource ? <Loader2 className="animate-spin inline mr-2" /> : '立即連結並同步'}
@@ -543,7 +539,7 @@ function App() {
               <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xl" onClick={() => !isSyncingToCloud && setIsModalOpen(false)}></div>
               <div className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl relative z-10 overflow-hidden animate-in zoom-in duration-200">
                   <div className="bg-orange-600 p-6 text-white flex justify-between items-center">
-                    <h2 className="text-xl font-black">{editingReservation ? '更新訂單資訊' : '新增預約紀錄'}</h2>
+                    <h2 className="text-xl font-black">{editingReservation ? '更新訂單' : '新增預約'}</h2>
                     <button onClick={() => !isSyncingToCloud && setIsModalOpen(false)} className="p-2 hover:bg-orange-700 rounded-xl transition-colors"><X className="w-7 h-7" /></button>
                   </div>
                   <div className="p-8 space-y-6 max-h-[85vh] overflow-y-auto custom-scrollbar">
@@ -561,36 +557,44 @@ function App() {
                           <input type="time" value={form.time} onChange={e => setForm({...form, time: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none text-sm" />
                         </div>
                         <div className="col-span-1">
-                          <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">用餐時長</label>
+                          <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">時長</label>
                           <select disabled={form.type === '外帶'} value={form.type === '外帶' ? 0 : form.duration} onChange={e => setForm({...form, duration: parseInt(e.target.value)})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none text-sm focus:ring-2 focus:ring-orange-500 disabled:opacity-30">
-                            {form.type === '外帶' ? <option value={0}>無需設定</option> : DURATION_OPTIONS.map(d => <option key={d} value={d}>{d} 分鐘</option>)}
+                            {form.type === '外帶' ? <option value={0}>無需設定</option> : DURATION_OPTIONS.map(d => <option key={d} value={d}>{d} 分</option>)}
                           </select>
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-4">
-                        <input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="顧客姓名" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
-                        <input type="number" disabled={form.type === '外帶'} value={form.type === '外帶' ? 1 : (form.pax || 1)} onChange={e => setForm({...form, pax: parseInt(e.target.value) || 1})} placeholder="人數" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none disabled:opacity-30" />
+                        <div className="flex flex-col">
+                           <input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="顧客姓名" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
+                        </div>
+                        {/* 手機優化：改為 text 搭配 inputMode="numeric" 解決無法歸零問題 */}
+                        <div className="flex flex-col relative">
+                           <input 
+                              type="text" 
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              disabled={form.type === '外帶'} 
+                              value={form.type === '外帶' ? '1' : (form.pax === '0' ? '' : form.pax)} 
+                              onChange={e => {
+                                 const val = e.target.value.replace(/[^0-9]/g, '');
+                                 setForm({...form, pax: val === '' ? '0' : val});
+                              }} 
+                              placeholder="人數" 
+                              className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none disabled:opacity-30" 
+                           />
+                           <Users className="w-4 h-4 absolute right-4 top-4 opacity-20" />
+                        </div>
                       </div>
                       <input type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="聯絡電話" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500" />
                       
-                      {/* 外帶自動隱藏區域 */}
                       {form.type !== '外帶' && (
-                        <div className="space-y-4 pt-4 border-t border-slate-100 animate-in fade-in slide-in-from-top-2 duration-300">
+                        <div className="space-y-4 pt-4 border-t border-slate-100">
                           <div className="flex flex-col gap-2">
                             <div className="flex justify-between items-center">
-                              <label className="text-sm font-black text-slate-800 flex items-center gap-2">
-                                <Monitor className="w-4 h-4 text-orange-500" /> 選取桌位
-                              </label>
-                              <div className="flex gap-2">
-                                <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-emerald-500"></div><span className="text-[9px] font-bold text-slate-400">可選</span></div>
-                                <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-rose-500"></div><span className="text-[9px] font-bold text-slate-400">衝突</span></div>
-                              </div>
+                              <label className="text-sm font-black text-slate-800 flex items-center gap-2"><Monitor className="w-4 h-4 text-orange-500" /> 桌位安排</label>
                             </div>
-                            <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-2 flex items-center justify-between">
-                              <div className="flex items-center gap-2 text-indigo-700 font-bold text-xs">
-                                <Clock className="w-3.5 h-3.5" />
-                                {selectedTimeSlotLabel}
-                              </div>
+                            <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-2 text-indigo-700 font-bold text-xs flex items-center gap-2">
+                                <Clock className="w-3.5 h-3.5" /> {selectedTimeSlotLabel}
                             </div>
                           </div>
 
@@ -608,11 +612,10 @@ function App() {
                                   <span className={`text-xs font-black ${isSelected ? 'text-white' : ''}`}>{t}</span>
                                   {isOccupied && (
                                     <>
-                                      <span className="text-[8px] font-black mt-1 uppercase text-rose-500 bg-white/80 px-1 rounded-sm max-w-[90%] truncate">{occData.name}</span>
-                                      <span className="text-[8px] font-bold mt-0.5 opacity-60">~{occData.end}</span>
+                                      <span className="text-[8px] font-black mt-1 uppercase text-rose-500 truncate px-1">{occData.name}</span>
+                                      <span className="text-[8px] font-bold opacity-60">~{occData.end}</span>
                                     </>
                                   )}
-                                  {isSelected && <Check className="w-3 h-3 absolute top-2 right-2 text-indigo-300" />}
                                 </button>
                               );
                             })}
@@ -622,18 +625,18 @@ function App() {
 
                       {form.type === '外帶' && (
                         <div className="bg-indigo-50 border border-indigo-100 p-6 rounded-[32px] flex items-center gap-4 animate-in zoom-in duration-300">
-                          <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center text-indigo-600 shadow-sm"><ShoppingBag className="w-6 h-6" /></div>
+                          <ShoppingBag className="w-6 h-6 text-indigo-600" />
                           <div>
-                            <h4 className="font-black text-indigo-900">外帶訂單模式</h4>
-                            <p className="text-xs text-indigo-600 font-bold">系統將標註為外帶單，不佔用內用桌位。</p>
+                            <h4 className="font-black text-indigo-900">外帶模式已啟動</h4>
+                            <p className="text-xs text-indigo-600 font-bold">此模式下不會佔用店內桌位。</p>
                           </div>
                         </div>
                       )}
 
-                      <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none min-h-[100px] focus:ring-2 focus:ring-orange-500" placeholder="備註特殊需求或顧客偏好..."></textarea>
+                      <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none min-h-[80px] focus:ring-2 focus:ring-orange-500" placeholder="備註特殊需求..."></textarea>
                       <button onClick={handleSaveReservation} disabled={isSyncingToCloud} className="w-full bg-slate-900 text-white py-5 rounded-[28px] font-black text-lg flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50 transition-all shadow-xl">
                         {isSyncingToCloud ? <Loader2 className="w-6 h-6 animate-spin text-orange-500" /> : <Save className="w-6 h-6" />}
-                        {isSyncingToCloud ? '正在同步雲端...' : editingReservation ? '更新並儲存' : '確認儲存並同步'}
+                        {isSyncingToCloud ? '同步數據中...' : '儲存訂位並同步'}
                       </button>
                   </div>
               </div>

@@ -60,10 +60,10 @@ export const fetchCsvStreaming = async (
   return decodedText;
 };
 
-// 驗證內容是否為合法的訂位 CSV
+// 驗證內容是否為合法的訂位 CSV，防止讀取到 Google 登入頁面
 const validateCsvContent = (text: string) => {
   if (text.includes('google-site-verification') || text.includes('Sign in') || text.includes('<!DOCTYPE html>')) {
-    throw new Error("讀取到無效頁面 (可能是權限不足或需要登入)");
+    throw new Error("讀取到無效頁面 (可能是權限不足或需要重新登入 Google)");
   }
   if (text.length < 20) {
     throw new Error("CSV 資料過短或為空");
@@ -71,7 +71,7 @@ const validateCsvContent = (text: string) => {
   // 檢查是否包含關鍵標題
   const hasHeader = ['日期', '姓名', '電話', '時間'].some(key => text.includes(key));
   if (!hasHeader) {
-    throw new Error("找不到正確的資料欄位，請檢查試算表標題");
+    throw new Error("找不到正確的資料欄位，請確認試算表格式是否正確");
   }
 };
 
