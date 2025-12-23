@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { CalendarDays, RefreshCw, Loader2, Database, AlertCircle, Store, Globe, Link as LinkIcon, ChevronRight } from 'lucide-react';
+import { CalendarDays, RefreshCw, Loader2, Database, AlertCircle, Store, Globe, Link as LinkIcon, ChevronRight, Plus, Trash2, HelpCircle } from 'lucide-react';
 import { RosterData, SheetTab } from '../types';
 import { fetchCsvStreaming } from '../services/dataProcessor';
 import { parseRosterCSV, fetchSheetTabs } from '../services/rosterProcessor';
@@ -21,6 +21,11 @@ const RosterView: React.FC = () => {
   const [detectingTabs, setDetectingTabs] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 手動新增分頁用
+  const [showManualAdd, setShowManualAdd] = useState(false);
+  const [manualName, setManualName] = useState('');
+  const [manualGid, setManualGid] = useState('');
+
   // 當主網址變動時存入 localStorage
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_ROSTER_MASTER, masterUrl);
@@ -40,13 +45,28 @@ const RosterView: React.FC = () => {
     setError(null);
     try {
       const detectedTabs = await fetchSheetTabs(masterUrl);
+      if (detectedTabs.length === 0) throw new Error("偵測不到任何分頁，請確認是否發佈了「整份文件」。");
       setTabs(detectedTabs);
       if (detectedTabs.length > 0) setActiveGid(detectedTabs[0].gid);
     } catch (err: any) {
-      setError("偵測工作表失敗。請確認連結是否正確，且已設定為「發佈到網路 (全份文件)」。");
+      setError(err.message || "偵測工作表失敗。請確認連結是否正確，且已設定為「發佈到網路 (全份文件)」。");
     } finally {
       setDetectingTabs(false);
     }
+  };
+
+  const handleAddManualTab = () => {
+    if (!manualName || !manualGid) return alert("請輸入名稱與 GID");
+    const newTab = { name: manualName, gid: manualGid };
+    setTabs(prev => [...prev, newTab]);
+    setManualName('');
+    setManualGid('');
+    setShowManualAdd(false);
+  };
+
+  const removeTab = (gid: string) => {
+    setTabs(prev => prev.filter(t => t.gid !== gid));
+    if (activeGid === gid) setActiveGid(tabs.find(t => t.gid !== gid)?.gid || '');
   };
 
   const fetchRosterData = async (gid: string) => {
@@ -117,11 +137,10 @@ const RosterView: React.FC = () => {
       </div>
 
       {/* Tab Switcher */}
-      {tabs.length > 0 && (
-        <div className="flex gap-2 overflow-x-auto pb-2 custom-scrollbar">
-          {tabs.map((tab) => (
+      <div className="flex items-center gap-2 overflow-x-auto pb-2 custom-scrollbar">
+        {tabs.map((tab) => (
+          <div key={tab.gid} className="relative group">
             <button
-              key={tab.gid}
               onClick={() => setActiveGid(tab.gid)}
               className={`px-5 py-2.5 rounded-xl text-xs font-black whitespace-nowrap border transition-all flex items-center gap-2 ${
                 activeGid === tab.gid 
@@ -132,7 +151,52 @@ const RosterView: React.FC = () => {
               <CalendarDays className="w-3.5 h-3.5" />
               {tab.name}
             </button>
-          ))}
+            <button 
+              onClick={() => removeTab(tab.gid)}
+              className="absolute -top-1 -right-1 bg-slate-800 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+            >
+              <Trash2 className="w-2 h-2" />
+            </button>
+          </div>
+        ))}
+        <button 
+          onClick={() => setShowManualAdd(!showManualAdd)}
+          className="px-4 py-2.5 rounded-xl text-xs font-black bg-slate-100 text-slate-500 border border-dashed border-slate-300 hover:bg-slate-200 transition-all flex items-center gap-2"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          手動新增
+        </button>
+      </div>
+
+      {/* Manual Add Form */}
+      {showManualAdd && (
+        <div className="bg-white p-5 rounded-[24px] border border-slate-200 shadow-lg animate-in slide-in-from-top-2 duration-300 flex flex-wrap items-end gap-4">
+          <div className="space-y-1">
+            <label className="text-[10px] font-black text-slate-400 uppercase ml-1">分頁名稱 (如: 3月)</label>
+            <input 
+              type="text" 
+              value={manualName}
+              onChange={(e) => setManualName(e.target.value)}
+              placeholder="名稱"
+              className="px-4 py-2 bg-slate-50 border-none rounded-xl text-xs font-bold focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black text-slate-400 uppercase ml-1">GID (網址末端數字)</label>
+            <input 
+              type="text" 
+              value={manualGid}
+              onChange={(e) => setManualGid(e.target.value)}
+              placeholder="例如: 0"
+              className="px-4 py-2 bg-slate-50 border-none rounded-xl text-xs font-bold focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <button 
+            onClick={handleAddManualTab}
+            className="px-6 py-2 bg-orange-600 text-white rounded-xl text-xs font-black shadow-md hover:bg-orange-700 transition-all h-[36px]"
+          >
+            確認新增
+          </button>
         </div>
       )}
 
@@ -145,15 +209,14 @@ const RosterView: React.FC = () => {
       ) : error ? (
         <div className="bg-rose-50 border border-rose-200 rounded-[32px] p-12 flex flex-col items-center text-center">
           <AlertCircle className="w-12 h-12 text-rose-500 mb-4" />
-          <h3 className="font-black text-rose-800 text-xl mb-2">無法顯示班表</h3>
+          <h3 className="font-black text-rose-800 text-xl mb-2">連線發生問題</h3>
           <p className="text-rose-600 font-bold max-w-md mb-6">{error}</p>
-          <div className="bg-white p-6 rounded-2xl border border-rose-100 text-left text-xs font-medium text-rose-800 space-y-2 max-w-lg shadow-sm">
-            <p className="font-black flex items-center gap-2 text-rose-900"><Globe className="w-4 h-4" /> 設定檢查清單：</p>
-            <ul className="list-disc pl-5 space-y-1">
-              <li>確保試算表已設為「檔案 &gt; 共用 &gt; <b>發佈到網路</b>」</li>
-              <li>發佈範圍必須選擇「<b>全份文件</b>」</li>
-              <li>發佈格式建議選擇「<b>網頁</b>」</li>
-              <li>複製視窗中產生的 `pubhtml` 連結並貼在上方</li>
+          <div className="bg-white p-6 rounded-2xl border border-rose-100 text-left text-xs font-medium text-rose-800 space-y-3 max-w-lg shadow-sm">
+            <p className="font-black flex items-center gap-2 text-rose-900"><HelpCircle className="w-4 h-4" /> 排除故障建議：</p>
+            <ul className="list-disc pl-5 space-y-2">
+              <li><b>CORS 限制</b>：我們已使用代理程式，但若仍無反應，請確認 Google Sheets 連結是否為 <b>pubhtml</b> 結尾。</li>
+              <li><b>發佈設定</b>：確保在發佈視窗中，下拉選單選擇的是「<b>全份文件</b>」而非單一分頁。</li>
+              <li><b>手動方案</b>：如果您看得到試算表，請查看網址末端的 <code>gid=數字</code>，點擊上方的「手動新增」輸入該數字。</li>
             </ul>
           </div>
         </div>

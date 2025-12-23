@@ -3,29 +3,54 @@ import { RosterData, StaffRoster, RosterShift, SheetTab } from "../types";
 
 export const fetchSheetTabs = async (pubHtmlUrl: string): Promise<SheetTab[]> => {
   try {
-    const response = await fetch(pubHtmlUrl);
-    if (!response.ok) throw new Error("無法讀取 Google Sheets 頁面，請確認是否已發佈到網路。");
-    const html = await response.text();
+    // 使用 AllOrigins 代理來繞過 CORS 限制
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(pubHtmlUrl)}`;
+    const response = await fetch(proxyUrl);
     
+    if (!response.ok) throw new Error("無法連接到代理伺服器。");
+    
+    const data = await response.json();
+    const html = data.contents;
+    
+    if (!html) throw new Error("無法從連結中取得內容，請確認試算表是否已正確發佈。");
+
     const tabs: SheetTab[] = [];
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
     
-    // Google Sheets pubhtml 底部選單通常在 id 為 sheet-menu 的 <ul> 中
+    // 方案一：從 Google Sheets pubhtml 底部選單解析
     const menuItems = doc.querySelectorAll('#sheet-menu li a');
     
     if (menuItems.length > 0) {
       menuItems.forEach(item => {
         const name = item.textContent?.trim() || '';
         const href = item.getAttribute('href') || '';
-        const gid = href.replace('#', '').replace('gid=', '');
-        if (name && gid) tabs.push({ name, gid });
+        // 提取 gid=12345 或 #gid=12345
+        const gidMatch = href.match(/gid=([0-9]+)/);
+        const gid = gidMatch ? gidMatch[1] : href.replace('#', '');
+        
+        if (name && gid) {
+          // 避免重複
+          if (!tabs.find(t => t.gid === gid)) tabs.push({ name, gid });
+        }
       });
-    } else {
-      // 備選方案：解析 javascript 中的腳本物件
-      const gidMatches = html.matchAll(/"gid":"(\d+)","name":"([^"]+)"/g);
+    } 
+    
+    // 方案二：如果選單解析失敗，嘗試從 HTML 中的腳本變數解析 (備援方案)
+    if (tabs.length === 0) {
+      const gidMatches = Array.from(html.matchAll(/"gid"\s*:\s*"(\d+)"\s*,\s*"name"\s*:\s*"([^"]+)"/g)) as any[];
       for (const match of gidMatches) {
-        tabs.push({ gid: match[1], name: match[2] });
+        const gid = match[1];
+        const name = match[2];
+        if (!tabs.find(t => t.gid === gid)) tabs.push({ name, gid });
+      }
+    }
+
+    if (tabs.length === 0) {
+      // 如果依然沒有，嘗試解析單一分頁的 GID (如果網址本身就帶有 GID)
+      const urlGidMatch = pubHtmlUrl.match(/gid=([0-9]+)/);
+      if (urlGidMatch) {
+        tabs.push({ name: "預設分頁", gid: urlGidMatch[1] });
       }
     }
     
