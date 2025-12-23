@@ -1,13 +1,13 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox, RefreshCw, Loader2, X, Save, Globe, FileSpreadsheet, Database, ClipboardList, CheckCircle2, AlertCircle, Info, UserCheck, MessageSquare, Clock, ShieldAlert, CheckCircle, Ban, CalendarDays, Pencil, ExternalLink, MapPin, Unlink, Tag, Layers, Check, Monitor, ArrowRight, WifiOff } from 'lucide-react';
+import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox, RefreshCw, Loader2, X, Save, Globe, FileSpreadsheet, Database, ClipboardList, CheckCircle2, AlertCircle, Info, UserCheck, MessageSquare, Clock, ShieldAlert, CheckCircle, Ban, CalendarDays, Pencil, ExternalLink, MapPin, Unlink, Tag, Layers, Check, Monitor, ArrowRight, WifiOff, ShoppingBag } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import AnalysisCard from './components/AnalysisCard';
 import { AppView, Reservation, DataSource } from './types';
 import { mapReservationsCSVAsync, fetchCsvStreaming } from './services/dataProcessor';
 
 // 簽章版本，若結構變動則更新此值以清空舊黑名單
-const SIG_VERSION = 'v3'; 
+const SIG_VERSION = 'v4'; 
 const STORAGE_KEY_RESERVATIONS = 'bakery_reservations';
 const STORAGE_KEY_SOURCES = 'bakery_sources';
 const STORAGE_KEY_BLACKLIST = `bakery_sync_blacklist_${SIG_VERSION}`;
@@ -55,6 +55,13 @@ function App() {
   const [syncingAll, setSyncingAll] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
+  // 當選擇外帶時，清空已選桌號
+  useEffect(() => {
+    if (form.type === '外帶') {
+      setSelectedTables([]);
+    }
+  }, [form.type]);
+
   // 自動化邏輯：包場時自動設定時長與桌位
   useEffect(() => {
     if (isModalOpen && form.type === '包場') {
@@ -70,7 +77,7 @@ function App() {
         const next = { ...prev };
         let changed = false;
         Object.keys(next).forEach(key => {
-          if (now - next[key] > 900000) { // 15分鐘後過期
+          if (now - next[key] > 900000) { 
             delete next[key];
             changed = true;
           }
@@ -90,7 +97,6 @@ function App() {
     localStorage.setItem(STORAGE_KEY_SOURCES, JSON.stringify(dataSources));
   }, [dataSources]);
 
-  // 修改：加入 table 到簽章，確保修改桌號也會視為不同記錄
   const getSignature = (res: any) => {
     if (!res) return "";
     return [
@@ -99,7 +105,7 @@ function App() {
       (res.phone || '').toString().replace(/[\s\-]/g, '').trim(),
       (res.time || '12:00').toString().replace(/:/g, '').substring(0, 4),
       (res.pax || '1').toString().trim(),
-      (res.table || '').toString().trim() // 加入桌號判斷
+      (res.table || '').toString().trim() 
     ].join('|').toLowerCase();
   };
 
@@ -141,19 +147,23 @@ function App() {
         }
 
         setReservations(prev => {
-          // 1. 過濾掉黑名單中的雲端資料
           const processedRemote = allRemote.filter(r => !syncBlacklist[getSignature(r)]);
           
-          // 2. 保留本地尚未同步成功或正在同步中的資料
-          // 如果雲端已經有了（匹配姓名、日期、時間、桌號），則不顯示本地暂存
-          const localOnly = prev.filter(p => p.isLocal && !processedRemote.some(r => 
-            r.customerName === p.customerName && 
-            r.date === p.date && 
-            r.time === p.time &&
-            r.table === p.table
-          ));
+          // 修改合併邏輯：本地 pending 資料優先保留，直到雲端出現相同資料或超時
+          const localPending = prev.filter(p => p.isLocal && p.syncStatus === 'pending');
+          const localSyncedButRecent = prev.filter(p => p.isLocal && p.syncStatus === 'synced');
+
+          // 只過濾掉那些「已經在雲端出現」的本地暫存
+          const neededLocal = [...localPending, ...localSyncedButRecent].filter(p => 
+            !processedRemote.some(r => 
+              r.customerName === p.customerName && 
+              r.date === p.date && 
+              r.time === p.time &&
+              r.table === p.table
+            )
+          );
           
-          return [...localOnly, ...processedRemote];
+          return [...neededLocal, ...processedRemote];
         });
         
         setDataSources(prev => prev.map(s => ({...s, lastUpdated: new Date().toLocaleString(), status: 'ACTIVE'})));
@@ -161,9 +171,12 @@ function App() {
   };
 
   const handleSaveReservation = async () => {
-    if (!form.customerName || !form.date || selectedTables.length === 0) return alert('請確認姓名與桌號');
+    const isTakeout = form.type === '外帶';
+    if (!form.customerName || !form.date) return alert('請確認姓名與日期');
+    if (!isTakeout && selectedTables.length === 0) return alert('內用訂位請選擇桌號');
+
     setIsSyncingToCloud(true);
-    const tableString = selectedTables.sort().join(', ');
+    const tableString = isTakeout ? '外帶' : selectedTables.sort().join(', ');
     const targetSourceId = editingReservation?.sourceId || dataSources[0]?.id;
 
     const resPayload: Reservation = { 
@@ -177,7 +190,7 @@ function App() {
       table: tableString,
       notes: (form.notes || '').trim(),
       creator: form.creator || CREATOR_OPTIONS[0],
-      duration: form.duration || 90,
+      duration: isTakeout ? 0 : (form.duration || 90),
       isLocal: true,
       syncStatus: 'pending',
       sourceId: targetSourceId
@@ -186,7 +199,6 @@ function App() {
     let syncPayload: any = { action: editingReservation ? 'update' : 'create', ...resPayload };
 
     if (editingReservation) {
-      // 修改前，將舊狀態加入黑名單
       const oldSig = getSignature(editingReservation);
       const newBlacklist = { ...syncBlacklist, [oldSig]: Date.now() };
       setSyncBlacklist(newBlacklist);
@@ -201,10 +213,9 @@ function App() {
     const success = await syncToGoogleSheet(syncPayload, targetSourceId);
     if (success) {
       setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'synced' } : r));
-      // 延時同步以等待雲端 CSV 更新
       setTimeout(() => handleSyncAll(true), 15000);
     } else {
-      alert("雲端同步失敗，僅儲存於本地。");
+      setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'failed' } : r));
     }
     setIsSyncingToCloud(false);
     setIsModalOpen(false);
@@ -227,7 +238,7 @@ function App() {
   const handleOpenEdit = (res: Reservation) => {
     setEditingReservation(res);
     setForm({ ...res, duration: res.duration || 90 });
-    setSelectedTables((res.table || '').split(', ').filter(Boolean));
+    setSelectedTables((res.table || '').split(', ').filter(Boolean).filter(t => t !== '外帶'));
     setIsModalOpen(true);
   };
 
@@ -238,7 +249,7 @@ function App() {
     fetchCsvStreaming(newUrl, () => {}).then(csv => mapReservationsCSVAsync(csv, sId, () => {})).then(data => {
         setDataSources(prev => [...prev, { id: sId, name: newName || `分店 ${dataSources.length + 1}`, url: newUrl, writeUrl: newWriteUrl, type: 'RESERVATIONS', lastUpdated: new Date().toLocaleString(), status: 'ACTIVE', diningDuration: newDuration }]);
         setReservations(prev => [...data, ...prev]);
-        setNewUrl(''); setNewWriteUrl(''); setNewName('');
+        setNewUrl(''); setNewName(''); setNewWriteUrl('');
     }).catch(() => alert("連線失敗")).finally(() => setLoadingSource(false));
   };
 
@@ -254,7 +265,6 @@ function App() {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   };
 
-  // 即時桌況摘要 (現在時刻)
   const currentOccupancy = useMemo(() => {
     const now = new Date();
     const today = now.toISOString().split('T')[0];
@@ -262,7 +272,7 @@ function App() {
     const details = new Map<string, {name: string, time: string}>();
 
     reservations.forEach(res => {
-      if (res.date !== today) return;
+      if (res.date !== today || res.type === '外帶') return;
       const resStart = timeToMinutes(res.time);
       const resEnd = resStart + (res.duration || 90);
       if (nowMins >= resStart && nowMins < resEnd) {
@@ -272,9 +282,8 @@ function App() {
     return details;
   }, [reservations]);
 
-  // Modal 內的時段桌況計算
   const { occupiedTableDetails, selectedTimeSlotLabel } = useMemo(() => {
-    if (!isModalOpen || !form.date || !form.time) return { occupiedTableDetails: new Map<string, any>(), selectedTimeSlotLabel: '' };
+    if (!isModalOpen || !form.date || !form.time || form.type === '外帶') return { occupiedTableDetails: new Map<string, any>(), selectedTimeSlotLabel: '' };
     
     const startMins = timeToMinutes(form.time);
     const endMins = startMins + (form.duration || 90);
@@ -282,7 +291,7 @@ function App() {
     
     reservations.forEach(res => {
       if (editingReservation && res.id === editingReservation.id) return; 
-      if (res.date !== form.date) return;
+      if (res.date !== form.date || res.type === '外帶') return;
       
       const resStart = timeToMinutes(res.time);
       const resDuration = res.duration || 90;
@@ -298,7 +307,7 @@ function App() {
 
     const slotLabel = `${form.date} ${form.time} ~ ${minutesToTime(endMins)}`;
     return { occupiedTableDetails: details, selectedTimeSlotLabel: slotLabel };
-  }, [isModalOpen, form.date, form.time, form.duration, reservations, editingReservation]);
+  }, [isModalOpen, form.date, form.time, form.duration, form.type, reservations, editingReservation]);
 
   const filteredReservations = useMemo(() => {
     const s = searchTerm.toLowerCase();
@@ -344,13 +353,9 @@ function App() {
         <div className="max-w-4xl mx-auto pb-24">
           {currentView === AppView.RESERVATIONS ? (
             <div className="space-y-6">
-              {/* 狀態列 */}
               {syncError && (
-                <div className="bg-rose-600 text-white px-6 py-3 rounded-2xl flex items-center justify-between shadow-lg animate-bounce">
-                  <div className="flex items-center gap-3">
-                    <WifiOff className="w-5 h-5" />
-                    <span className="font-black text-sm">{syncError}</span>
-                  </div>
+                <div className="bg-rose-600 text-white px-6 py-3 rounded-2xl flex items-center justify-between shadow-lg animate-pulse">
+                  <div className="flex items-center gap-3"><WifiOff className="w-5 h-5" /><span className="font-black text-sm">{syncError}</span></div>
                   <button onClick={() => handleSyncAll()} className="p-1 hover:bg-white/20 rounded-lg"><RefreshCw className="w-4 h-4" /></button>
                 </div>
               )}
@@ -368,7 +373,7 @@ function App() {
                 </div>
                 <button onClick={() => handleSyncAll()} disabled={syncingAll} className="p-3 bg-white border rounded-2xl text-xs font-black shadow-sm flex items-center gap-2 active:scale-95 disabled:opacity-50 hover:bg-slate-50 transition-all">
                   {syncingAll ? <Loader2 className="animate-spin w-4 h-4 text-orange-500" /> : <RefreshCw className="text-orange-600 w-4 h-4" />}
-                  {syncingAll ? '雲端同步中...' : '手動重新整理'}
+                  {syncingAll ? '智慧抓取中...' : '重新整理數據'}
                 </button>
               </div>
 
@@ -404,18 +409,11 @@ function App() {
               <div className="sticky top-0 bg-slate-50/80 backdrop-blur-md pt-2 pb-4 z-20">
                 <div className="relative">
                   <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" />
-                  <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="搜尋姓名、電話、桌號..." className="w-full pl-12 pr-4 py-4 border-none rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500 bg-white font-medium" />
+                  <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="搜尋姓名、電話、桌號、外帶..." className="w-full pl-12 pr-4 py-4 border-none rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500 bg-white font-medium" />
                 </div>
               </div>
 
               <div className="space-y-10">
-                {sortedDates.length === 0 && !syncingAll && (
-                  <div className="py-20 text-center text-slate-400">
-                    <Inbox className="w-16 h-16 mx-auto mb-4 opacity-20" />
-                    <p className="font-black text-lg">尚無訂位資料</p>
-                    <p className="text-sm font-bold opacity-60">點擊右下角按鈕新增一筆。</p>
-                  </div>
-                )}
                 {sortedDates.map(date => (
                   <div key={date}>
                     <div className="flex items-center gap-2 mb-4">
@@ -424,17 +422,18 @@ function App() {
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                       {groupedRes[date].map((res: Reservation) => (
-                        <div key={res.id} className={`p-6 rounded-[32px] shadow-sm border relative group transition-all hover:shadow-md ${res.type === '包場' ? 'bg-rose-50 border-rose-200 text-rose-900 shadow-rose-100' : res.type === '外帶' ? 'bg-sky-50 border-sky-200 text-sky-900 shadow-sky-100' : 'bg-white border-slate-100 text-slate-800'}`}>
+                        <div key={res.id} className={`p-6 rounded-[32px] shadow-sm border relative group transition-all hover:shadow-md ${res.type === '包場' ? 'bg-rose-50 border-rose-200 text-rose-900 shadow-rose-100' : res.type === '外帶' ? 'bg-indigo-50 border-indigo-200 text-indigo-900 shadow-indigo-100' : 'bg-white border-slate-100 text-slate-800'}`}>
                           <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button onClick={() => handleOpenEdit(res)} className="p-2 hover:bg-slate-200 rounded-lg transition-colors"><Pencil className="w-4 h-4 text-slate-600" /></button>
                             <button onClick={() => handleDeleteReservation(res)} className="p-2 hover:bg-rose-200 text-rose-500 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
                           </div>
                           <div className="flex justify-between items-center mb-4">
                             <div className="flex items-center gap-2">
-                                <span className={`font-black px-3 py-1.5 rounded-xl text-xs shadow-sm ${res.type === '包場' ? 'bg-rose-200' : 'bg-slate-100'}`}>{res.time}</span>
+                                <span className={`font-black px-3 py-1.5 rounded-xl text-xs shadow-sm ${res.type === '包場' ? 'bg-rose-200' : res.type === '外帶' ? 'bg-indigo-200' : 'bg-slate-100'}`}>{res.time}</span>
                                 {res.syncStatus === 'pending' && <Loader2 className="w-3 h-3 animate-spin text-orange-500" />}
                             </div>
-                            <span className="text-[9px] font-black uppercase tracking-widest bg-black/5 px-2 py-1 rounded-md">
+                            <span className="text-[9px] font-black uppercase tracking-widest bg-black/5 px-2 py-1 rounded-md flex items-center gap-1">
+                              {res.type === '外帶' && <ShoppingBag className="w-2.5 h-2.5" />}
                               {res.type}
                             </span>
                           </div>
@@ -451,8 +450,13 @@ function App() {
                           )}
 
                           <div className="pt-4 border-t border-black/5 flex justify-between items-center">
-                            <div className="flex items-center gap-2 font-black text-base"><Users className="w-5 h-5 opacity-40" /> {res.pax} 位 ({res.duration || 90}m)</div>
-                            <div className={`text-base font-black px-4 py-2 rounded-2xl shadow-lg ${res.type === '包場' ? 'bg-rose-600 text-white' : 'bg-slate-900 text-white'}`}>{res.table || '待排'}</div>
+                            <div className="flex items-center gap-2 font-black text-base">
+                              {res.type === '外帶' ? <ShoppingBag className="w-5 h-5 opacity-40" /> : <Users className="w-5 h-5 opacity-40" />}
+                              {res.type === '外帶' ? '預計自取' : `${res.pax} 位 (${res.duration}m)`}
+                            </div>
+                            <div className={`text-base font-black px-4 py-2 rounded-2xl shadow-lg ${res.type === '包場' ? 'bg-rose-600 text-white' : res.type === '外帶' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-white'}`}>
+                              {res.table || (res.type === '外帶' ? '🛍️ 外帶' : '待排')}
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -501,7 +505,7 @@ function App() {
               <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xl" onClick={() => !isSyncingToCloud && setIsModalOpen(false)}></div>
               <div className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl relative z-10 overflow-hidden animate-in zoom-in duration-200">
                   <div className="bg-orange-600 p-6 text-white flex justify-between items-center">
-                    <h2 className="text-xl font-black">{editingReservation ? '修改訂位內容' : '快速新增訂位'}</h2>
+                    <h2 className="text-xl font-black">{editingReservation ? '修改內容' : '快速新增'}</h2>
                     <button onClick={() => !isSyncingToCloud && setIsModalOpen(false)} className="p-2 hover:bg-orange-700 rounded-xl transition-colors"><X className="w-7 h-7" /></button>
                   </div>
                   <div className="p-8 space-y-6 max-h-[85vh] overflow-y-auto custom-scrollbar">
@@ -520,63 +524,74 @@ function App() {
                         </div>
                         <div className="col-span-1">
                           <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">時長 (分)</label>
-                          <select value={form.duration} onChange={e => setForm({...form, duration: parseInt(e.target.value)})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none text-sm focus:ring-2 focus:ring-orange-500">
-                            {DURATION_OPTIONS.map(d => <option key={d} value={d}>{d} 分鐘</option>)}
+                          <select disabled={form.type === '外帶'} value={form.type === '外帶' ? 0 : form.duration} onChange={e => setForm({...form, duration: parseInt(e.target.value)})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none text-sm focus:ring-2 focus:ring-orange-500 disabled:opacity-30">
+                            {form.type === '外帶' ? <option value={0}>無需時長</option> : DURATION_OPTIONS.map(d => <option key={d} value={d}>{d} 分鐘</option>)}
                           </select>
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="顧客姓名" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
-                        <input type="number" value={form.pax} onChange={e => setForm({...form, pax: parseInt(e.target.value) || 1})} placeholder="人數" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
+                        <input type="number" disabled={form.type === '外帶'} value={form.type === '外帶' ? 1 : form.pax} onChange={e => setForm({...form, pax: parseInt(e.target.value) || 1})} placeholder="人數" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none disabled:opacity-30" />
                       </div>
                       <input type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="聯絡電話" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500" />
                       
-                      {/* Modal 內時段桌況預覽 */}
-                      <div className="space-y-4 pt-4 border-t border-slate-100">
-                        <div className="flex flex-col gap-2">
-                          <div className="flex justify-between items-center">
-                            <label className="text-sm font-black text-slate-800 flex items-center gap-2">
-                              <Monitor className="w-4 h-4 text-orange-500" /> 所選時段桌況預覽
-                            </label>
-                            <div className="flex gap-2">
-                              <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-emerald-500"></div><span className="text-[9px] font-bold text-slate-400">可訂</span></div>
-                              <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-rose-500"></div><span className="text-[9px] font-bold text-slate-400">已佔</span></div>
+                      {/* 外帶自動隱藏桌況預覽區 */}
+                      {form.type !== '外帶' && (
+                        <div className="space-y-4 pt-4 border-t border-slate-100 animate-in fade-in slide-in-from-top-2 duration-300">
+                          <div className="flex flex-col gap-2">
+                            <div className="flex justify-between items-center">
+                              <label className="text-sm font-black text-slate-800 flex items-center gap-2">
+                                <Monitor className="w-4 h-4 text-orange-500" /> 時段桌況預覽
+                              </label>
+                              <div className="flex gap-2">
+                                <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-emerald-500"></div><span className="text-[9px] font-bold text-slate-400">可訂</span></div>
+                                <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-rose-500"></div><span className="text-[9px] font-bold text-slate-400">已佔</span></div>
+                              </div>
+                            </div>
+                            <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-2 flex items-center justify-between">
+                              <div className="flex items-center gap-2 text-indigo-700 font-bold text-xs">
+                                <CalendarDays className="w-3.5 h-3.5" />
+                                {selectedTimeSlotLabel}
+                              </div>
+                              <span className="text-[10px] font-black text-indigo-400 uppercase tracking-tighter">系統自動計算衝突</span>
                             </div>
                           </div>
-                          <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-2 flex items-center justify-between">
-                            <div className="flex items-center gap-2 text-indigo-700 font-bold text-xs">
-                              <CalendarDays className="w-3.5 h-3.5" />
-                              {selectedTimeSlotLabel}
-                            </div>
-                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-tighter">系統自動計算衝突中</span>
-                          </div>
-                        </div>
 
-                        <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                          {TABLE_OPTIONS.map(t => {
-                            const occData = occupiedTableDetails.get(t);
-                            const isOccupied = !!occData;
-                            const isSelected = selectedTables.includes(t);
-                            return (
-                              <button key={t} onClick={() => !isOccupied && setSelectedTables(prev => prev.includes(t) ? prev.filter(x=>x!==t) : [...prev, t])} disabled={isOccupied} className={`py-4 rounded-2xl border flex flex-col items-center justify-center transition-all relative ${
-                                isSelected ? 'bg-indigo-600 text-white border-indigo-700 shadow-lg scale-105 z-10' : 
-                                isOccupied ? 'bg-rose-50 text-rose-800 border-rose-200 cursor-not-allowed opacity-90' : 
-                                'bg-emerald-50 text-emerald-800 border-emerald-200 hover:border-emerald-400 hover:scale-[1.02]'
-                              }`}>
-                                <span className={`text-xs font-black ${isSelected ? 'text-white' : ''}`}>{t}</span>
-                                {isOccupied && (
-                                  <>
-                                    <span className="text-[8px] font-black mt-1 uppercase text-rose-500 bg-white/80 px-1 rounded-sm max-w-[90%] truncate">{occData.name}</span>
-                                    <span className="text-[8px] font-bold mt-0.5 opacity-60">~{occData.end}</span>
-                                  </>
-                                )}
-                                {isSelected && <Check className="w-3 h-3 absolute top-2 right-2 text-indigo-300" />}
-                                {!isOccupied && !isSelected && <span className="text-[8px] font-bold mt-1 opacity-40">FREE</span>}
-                              </button>
-                            );
-                          })}
+                          <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                            {TABLE_OPTIONS.map(t => {
+                              const occData = occupiedTableDetails.get(t);
+                              const isOccupied = !!occData;
+                              const isSelected = selectedTables.includes(t);
+                              return (
+                                <button key={t} onClick={() => !isOccupied && setSelectedTables(prev => prev.includes(t) ? prev.filter(x=>x!==t) : [...prev, t])} disabled={isOccupied} className={`py-4 rounded-2xl border flex flex-col items-center justify-center transition-all relative ${
+                                  isSelected ? 'bg-indigo-600 text-white border-indigo-700 shadow-lg scale-105 z-10' : 
+                                  isOccupied ? 'bg-rose-50 text-rose-800 border-rose-200 cursor-not-allowed opacity-90' : 
+                                  'bg-emerald-50 text-emerald-800 border-emerald-200 hover:border-emerald-400'
+                                }`}>
+                                  <span className={`text-xs font-black ${isSelected ? 'text-white' : ''}`}>{t}</span>
+                                  {isOccupied && (
+                                    <>
+                                      <span className="text-[8px] font-black mt-1 uppercase text-rose-500 bg-white/80 px-1 rounded-sm max-w-[90%] truncate">{occData.name}</span>
+                                      <span className="text-[8px] font-bold mt-0.5 opacity-60">~{occData.end}</span>
+                                    </>
+                                  )}
+                                  {isSelected && <Check className="w-3 h-3 absolute top-2 right-2 text-indigo-300" />}
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
+                      )}
+
+                      {form.type === '外帶' && (
+                        <div className="bg-indigo-50 border border-indigo-100 p-6 rounded-[32px] flex items-center gap-4 animate-in zoom-in duration-300">
+                          <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center text-indigo-600 shadow-sm"><ShoppingBag className="w-6 h-6" /></div>
+                          <div>
+                            <h4 className="font-black text-indigo-900">外帶訂位模式</h4>
+                            <p className="text-xs text-indigo-600 font-bold">此模式不需要分配桌號，系統將自動標記為外帶自取單。</p>
+                          </div>
+                        </div>
+                      )}
 
                       <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none min-h-[100px] focus:ring-2 focus:ring-orange-500" placeholder="備註特殊需求..."></textarea>
                       <button onClick={handleSaveReservation} disabled={isSyncingToCloud} className="w-full bg-slate-900 text-white py-5 rounded-[28px] font-black text-lg flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50 transition-all shadow-xl">

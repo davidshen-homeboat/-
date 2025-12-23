@@ -6,6 +6,8 @@ export const fetchCsvStreaming = async (
   onProgress: (phase: 'download' | 'parse', percent: number, loadedMb?: string) => void
 ): Promise<string> => {
   let targetUrl = url;
+  
+  // 基礎 URL 轉換邏輯
   if (!url.includes('output=csv') && !url.includes('format=csv')) {
     if (url.includes('/spreadsheets/d/') && !url.includes('/pub')) {
       const idMatch = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
@@ -16,7 +18,11 @@ export const fetchCsvStreaming = async (
     }
   }
 
-  const response = await fetch(targetUrl);
+  // 新增快取破壞 (Cache Busting) 參數，強迫 Google 伺服器回傳最新資料
+  const cacheBuster = `&t=${Date.now()}`;
+  const finalUrl = targetUrl.includes('?') ? `${targetUrl}${cacheBuster}` : `${targetUrl}?${cacheBuster}`;
+
+  const response = await fetch(finalUrl);
   if (!response.ok) throw new Error(`連線失敗 (${response.status})`);
 
   const reader = response.body?.getReader();
@@ -58,19 +64,14 @@ const fastNormalizeDate = (raw: string): string => {
   try {
     const now = new Date();
     const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentMonth = now.getMonth() + 1;
 
     let year, month, day;
     if (parts.length === 2) {
         year = currentYear;
         month = parseInt(parts[0]);
         day = parseInt(parts[1]);
-        
-        // 跨年偵測邏輯：
-        // 如果現在是 10, 11, 12 月，但輸入的月份是 1, 2, 3 月，自動判定為明年
-        if (currentMonth >= 10 && month <= 3) {
-          year += 1;
-        }
+        if (currentMonth >= 10 && month <= 3) year += 1;
     } else if (parts.length === 3) {
         year = parseInt(parts[0]);
         month = parseInt(parts[1]);
@@ -127,7 +128,7 @@ export const mapReservationsCSVAsync = async (
           creator: row[7] || '',
           table: row[8] || '',
           notes: row[10] || '',
-          duration: row[11] ? parseInt(row[11]) : 90, // 假設 CSV 若有第 L 欄則讀取時長
+          duration: row[11] ? parseInt(row[11]) : 90,
           isLocal: false
         });
       }
