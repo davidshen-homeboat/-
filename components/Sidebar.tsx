@@ -1,5 +1,6 @@
+
 import React from 'react';
-import { CalendarDays, Link as LinkIcon, X, ChefHat } from 'lucide-react';
+import { CalendarDays, Link as LinkIcon, X, ChefHat, ClipboardList } from 'lucide-react';
 import { AppView } from '../types';
 
 interface SidebarProps {
@@ -12,6 +13,7 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isOpen, onClose }) => {
   const menuItems = [
     { id: AppView.RESERVATIONS, label: '訂位管理', icon: CalendarDays },
+    { id: AppView.ROSTER, label: '班表顯示系統', icon: ClipboardList },
     { id: AppView.INTEGRATION, label: '資料來源設定', icon: LinkIcon },
   ];
 
@@ -42,7 +44,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isOpen, on
             </div>
             <div>
               <h1 className="font-bold text-lg leading-tight">BakeryOS</h1>
-              <p className="text-xs text-slate-400">專屬訂位系統</p>
+              <p className="text-xs text-slate-400">專屬營運系統</p>
             </div>
           </div>
           <button onClick={onClose} className="md:hidden text-slate-400 hover:text-white">
@@ -68,7 +70,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isOpen, on
         </nav>
 
         <div className="p-4 border-t border-slate-700 text-center text-xs text-slate-500">
-          v3.1 Stable Mode
+          v4.0 Roster Active
         </div>
       </aside>
     </>

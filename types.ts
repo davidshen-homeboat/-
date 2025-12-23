@@ -16,7 +16,7 @@ export interface Reservation {
   syncStatus?: 'synced' | 'pending' | 'failed';
 }
 
-export type DataType = 'RESERVATIONS';
+export type DataType = 'RESERVATIONS' | 'ROSTER';
 
 export interface DataSource {
   id: string;
@@ -29,7 +29,31 @@ export interface DataSource {
   diningDuration: number; // In minutes, custom for each shop
 }
 
+export interface SheetTab {
+  name: string;
+  gid: string;
+}
+
+export interface RosterShift {
+  date: number;
+  shift: string; // A, B, C, H
+}
+
+export interface StaffRoster {
+  shopName: string;
+  staffName: string;
+  shifts: RosterShift[];
+}
+
+export interface RosterData {
+  year: string;
+  month: string;
+  days: number[];
+  staffs: StaffRoster[];
+}
+
 export enum AppView {
   RESERVATIONS = 'RESERVATIONS',
-  INTEGRATION = 'INTEGRATION'
+  INTEGRATION = 'INTEGRATION',
+  ROSTER = 'ROSTER'
 }

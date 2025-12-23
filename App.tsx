@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox, RefreshCw, Loader2, X, Save, Globe, FileSpreadsheet, Database, ClipboardList, CheckCircle2, AlertCircle, Info, UserCheck, MessageSquare, Clock, ShieldAlert, CheckCircle, Ban, CalendarDays, Pencil, ExternalLink, MapPin, Unlink, Tag, Layers, Check, Monitor, ArrowRight, WifiOff, ShoppingBag } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import AnalysisCard from './components/AnalysisCard';
+import RosterView from './components/RosterView';
 import { AppView, Reservation, DataSource } from './types';
 import { mapReservationsCSVAsync, fetchCsvStreaming } from './services/dataProcessor';
 
@@ -247,6 +248,7 @@ function App() {
   const handleDeleteReservation = async (res: Reservation) => {
     if (!confirm(`確定要完全刪除「${res.customerName}」的紀錄嗎？`)) return;
     const sig = getSignature(res);
+    // Fix: replaced oldSig with sig as it was not defined in this scope
     const newBlacklist = { ...syncBlacklist, [sig]: Date.now() };
     setSyncBlacklist(newBlacklist);
     localStorage.setItem(STORAGE_KEY_BLACKLIST, JSON.stringify(newBlacklist));
@@ -374,6 +376,159 @@ function App() {
     [groupedRes]
   );
 
+  const renderContent = () => {
+    switch (currentView) {
+      case AppView.ROSTER:
+        return <RosterView />;
+      case AppView.INTEGRATION:
+        return (
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="p-10 bg-slate-900 rounded-[40px] text-white shadow-2xl relative overflow-hidden">
+               <h1 className="text-4xl font-black relative z-10">資料同步中心</h1>
+               <p className="text-slate-400 mt-2 relative z-10 font-bold">在此連結 Google 試算表，實現雲端數據串接。</p>
+               <div className="absolute bottom-0 right-0 p-6 opacity-20"><Layers className="w-32 h-32" /></div>
+            </div>
+            <div className="grid grid-cols-1 gap-4">
+              {dataSources.map(ds => (
+                <div key={ds.id} className="bg-white rounded-[32px] shadow-sm border p-6 flex items-center justify-between group">
+                   <div className="flex items-center gap-4">
+                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-colors ${ds.status === 'ERROR' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}><Database className="w-6 h-6" /></div>
+                      <div><h3 className="font-black text-slate-800 text-lg">{ds.name}</h3><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{ds.status === 'ERROR' ? '異常保護中' : ds.lastUpdated}</p></div>
+                   </div>
+                   <div className="flex items-center gap-2">
+                     <button onClick={() => { setSyncingAll(true); handleSyncAll(); }} className="p-3 text-slate-400 hover:text-orange-500 rounded-xl"><RefreshCw className="w-5 h-5" /></button>
+                     <button onClick={() => setDataSources(prev => prev.filter(s => s.id !== ds.id))} className="p-3 text-slate-300 hover:text-rose-500 rounded-xl transition-all"><Unlink className="w-5 h-5" /></button>
+                   </div>
+                </div>
+              ))}
+            </div>
+            <div className="bg-white rounded-[40px] shadow-xl border p-8 space-y-6">
+               <h3 className="font-black text-slate-800 text-xl flex items-center gap-2"><Globe className="text-orange-600" /> 連結新分店</h3>
+               <div className="space-y-4">
+                 <input type="text" value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="分店名稱" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                 <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="Google Sheets CSV 連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+                 <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script API 連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
+               </div>
+               <button onClick={handleAddSource} disabled={loadingSource} className="w-full bg-slate-900 text-white py-5 rounded-3xl font-black text-lg transition-all active:scale-95 disabled:opacity-50">
+                 {loadingSource ? <Loader2 className="animate-spin inline mr-2" /> : '立即連結並同步'}
+               </button>
+            </div>
+          </div>
+        );
+      default:
+        return (
+          <div className="space-y-6">
+            {syncError && (
+              <div className="bg-rose-600 text-white px-6 py-4 rounded-3xl flex items-center justify-between shadow-xl animate-in slide-in-from-top-4 duration-300">
+                <div className="flex items-center gap-3"><AlertCircle className="w-5 h-5" /><span className="font-black text-sm">{syncError}</span></div>
+                <button onClick={() => handleSyncAll()} className="p-2 bg-white/20 hover:bg-white/30 rounded-xl"><RefreshCw className="w-4 h-4" /></button>
+              </div>
+            )}
+
+            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+              <div className="space-y-3">
+                <h1 className="text-3xl font-black text-slate-800 tracking-tight">訂位看板</h1>
+                <div className="flex flex-wrap gap-2">
+                  {dataSources.map(ds => (
+                    <span key={ds.id} className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border shadow-sm transition-colors ${ds.status === 'ERROR' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                      {ds.name} • {ds.status === 'ERROR' ? '保護模式' : '已同步'}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <button onClick={() => handleSyncAll()} disabled={syncingAll} className="p-3 bg-white border rounded-2xl text-xs font-black shadow-sm flex items-center gap-2 active:scale-95 disabled:opacity-50 hover:bg-slate-50 transition-all">
+                {syncingAll ? <Loader2 className="animate-spin w-4 h-4 text-orange-500" /> : <RefreshCw className="text-orange-600 w-4 h-4" />}
+                {syncingAll ? '更新中...' : '重新整理'}
+              </button>
+            </div>
+
+            <div className="bg-white rounded-[32px] border border-slate-200 p-6 shadow-sm">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Monitor className="w-5 h-5 text-indigo-500" />
+                  <h3 className="text-sm font-black text-slate-800">
+                    即時桌況摘要 <span className="text-slate-400 font-bold ml-1">({new Date().toLocaleTimeString('zh-TW', {hour:'2-digit', minute:'2-digit'})})</span>
+                  </h3>
+                </div>
+              </div>
+              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-12 gap-2">
+                {TABLE_OPTIONS.map(t => {
+                  const occ = currentOccupancy.get(t);
+                  return (
+                    <div key={t} className={`p-2 rounded-xl text-center border transition-all ${occ ? 'bg-rose-50 border-rose-200 text-rose-600 shadow-sm' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}>
+                      <div className="text-[10px] font-black">{t}</div>
+                      <div className="text-[8px] font-bold mt-0.5 truncate">{occ ? occ.name : 'FREE'}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <AnalysisCard type="RESERVATIONS" data={filteredReservations.slice(0, 100)} />
+
+            <div className="sticky top-0 bg-slate-50/80 backdrop-blur-md pt-2 pb-4 z-20">
+              <div className="relative">
+                <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" />
+                <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="搜尋姓名、電話、桌號、外帶..." className="w-full pl-12 pr-4 py-4 border-none rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500 bg-white font-medium" />
+              </div>
+            </div>
+
+            <div className="space-y-10">
+              {sortedDates.map(date => (
+                <div key={date} className="animate-in fade-in duration-500">
+                  <div className="flex items-center gap-2 mb-4">
+                    <h2 className="text-lg font-black text-slate-800">{new Date(date).toLocaleDateString('zh-TW', {month: 'numeric', day: 'numeric', weekday: 'short'})}</h2>
+                    <div className="h-px flex-1 bg-slate-200"></div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    {groupedRes[date].map((res: Reservation) => (
+                      <div key={res.id} className={`p-6 rounded-[32px] shadow-sm border relative group transition-all hover:shadow-md ${res.type === '包場' ? 'bg-rose-50 border-rose-200 text-rose-900 shadow-rose-100' : res.type === '外帶' ? 'bg-indigo-50 border-indigo-200 text-indigo-900 shadow-indigo-100' : 'bg-white border-slate-100 text-slate-800'}`}>
+                        <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={() => handleOpenEdit(res)} className="p-2 hover:bg-slate-200 rounded-lg transition-colors"><Pencil className="w-4 h-4 text-slate-600" /></button>
+                          <button onClick={() => handleDeleteReservation(res)} className="p-2 hover:bg-rose-200 text-rose-500 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
+                        </div>
+                        <div className="flex justify-between items-center mb-4">
+                          <div className="flex items-center gap-2">
+                              <span className={`font-black px-3 py-1.5 rounded-xl text-xs shadow-sm ${res.type === '包場' ? 'bg-rose-200' : res.type === '外帶' ? 'bg-indigo-200' : 'bg-slate-100'}`}>{res.time.substring(0, 5)}</span>
+                              {res.syncStatus === 'pending' && <Loader2 className="w-3 h-3 animate-spin text-orange-500" />}
+                          </div>
+                          <span className="text-[9px] font-black uppercase tracking-widest bg-black/5 px-2 py-1 rounded-md flex items-center gap-1">
+                            {res.type === '外帶' && <ShoppingBag className="w-2.5 h-2.5" />}
+                            {res.type}
+                          </span>
+                        </div>
+                        <h3 className="font-black text-xl mb-1 flex items-center gap-2">
+                          {res.customerName}
+                        </h3>
+                        <div className="flex items-center gap-1.5 text-xs font-bold mb-4 opacity-70"><Phone className="w-3 h-3" /> {res.phone || '無電話'}</div>
+                        
+                        {res.notes && (
+                          <div className="mb-4 p-3 rounded-2xl bg-black/5 text-sm font-medium leading-relaxed italic border-l-4 border-orange-400">
+                            「{res.notes}」
+                          </div>
+                        )}
+
+                        <div className="pt-4 border-t border-black/5 flex justify-between items-center">
+                          <div className="flex items-center gap-2 font-black text-base">
+                            {res.type === '外帶' ? <ShoppingBag className="w-5 h-5 opacity-40 text-indigo-600" /> : <Users className="w-5 h-5 opacity-40" />}
+                            {res.type === '外帶' ? '外帶' : `${res.pax} 位`}
+                          </div>
+                          <div className={`text-base font-black px-4 py-2 rounded-2xl shadow-lg ${res.type === '包場' ? 'bg-rose-600 text-white' : res.type === '外帶' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-white'}`}>
+                            {res.type === '外帶' ? '🛍️ 外帶' : (res.table || '待排')}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => { setEditingReservation(null); setForm({ date: new Date().toISOString().split('T')[0], time: '12:00', pax: '2', type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90 }); setSelectedTables([]); setIsModalOpen(true); }} className="fixed bottom-8 right-8 w-16 h-16 bg-orange-600 text-white rounded-3xl shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 z-40 transition-transform shadow-orange-200"><Plus className="w-10 h-10" /></button>
+          </div>
+        );
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row overflow-x-hidden">
       <div className="md:hidden bg-white border-b px-6 py-4 flex justify-between items-center sticky top-0 z-30 shadow-sm">
@@ -388,149 +543,7 @@ function App() {
       
       <main className="flex-1 md:ml-64 p-5 md:p-12 h-screen overflow-y-auto custom-scrollbar">
         <div className="max-w-4xl mx-auto pb-24">
-          {currentView === AppView.RESERVATIONS ? (
-            <div className="space-y-6">
-              {syncError && (
-                <div className="bg-rose-600 text-white px-6 py-4 rounded-3xl flex items-center justify-between shadow-xl animate-in slide-in-from-top-4 duration-300">
-                  <div className="flex items-center gap-3"><AlertCircle className="w-5 h-5" /><span className="font-black text-sm">{syncError}</span></div>
-                  <button onClick={() => handleSyncAll()} className="p-2 bg-white/20 hover:bg-white/30 rounded-xl"><RefreshCw className="w-4 h-4" /></button>
-                </div>
-              )}
-
-              <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-                <div className="space-y-3">
-                  <h1 className="text-3xl font-black text-slate-800 tracking-tight">訂位看板</h1>
-                  <div className="flex flex-wrap gap-2">
-                    {dataSources.map(ds => (
-                      <span key={ds.id} className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border shadow-sm transition-colors ${ds.status === 'ERROR' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-                        {ds.name} • {ds.status === 'ERROR' ? '保護模式' : '已同步'}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <button onClick={() => handleSyncAll()} disabled={syncingAll} className="p-3 bg-white border rounded-2xl text-xs font-black shadow-sm flex items-center gap-2 active:scale-95 disabled:opacity-50 hover:bg-slate-50 transition-all">
-                  {syncingAll ? <Loader2 className="animate-spin w-4 h-4 text-orange-500" /> : <RefreshCw className="text-orange-600 w-4 h-4" />}
-                  {syncingAll ? '更新中...' : '重新整理'}
-                </button>
-              </div>
-
-              <div className="bg-white rounded-[32px] border border-slate-200 p-6 shadow-sm">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <Monitor className="w-5 h-5 text-indigo-500" />
-                    <h3 className="text-sm font-black text-slate-800">
-                      即時桌況摘要 <span className="text-slate-400 font-bold ml-1">({new Date().toLocaleTimeString('zh-TW', {hour:'2-digit', minute:'2-digit'})})</span>
-                    </h3>
-                  </div>
-                </div>
-                <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-12 gap-2">
-                  {TABLE_OPTIONS.map(t => {
-                    const occ = currentOccupancy.get(t);
-                    return (
-                      <div key={t} className={`p-2 rounded-xl text-center border transition-all ${occ ? 'bg-rose-50 border-rose-200 text-rose-600 shadow-sm' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}>
-                        <div className="text-[10px] font-black">{t}</div>
-                        <div className="text-[8px] font-bold mt-0.5 truncate">{occ ? occ.name : 'FREE'}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <AnalysisCard type="RESERVATIONS" data={filteredReservations.slice(0, 100)} />
-
-              <div className="sticky top-0 bg-slate-50/80 backdrop-blur-md pt-2 pb-4 z-20">
-                <div className="relative">
-                  <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" />
-                  <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="搜尋姓名、電話、桌號、外帶..." className="w-full pl-12 pr-4 py-4 border-none rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500 bg-white font-medium" />
-                </div>
-              </div>
-
-              <div className="space-y-10">
-                {sortedDates.map(date => (
-                  <div key={date} className="animate-in fade-in duration-500">
-                    <div className="flex items-center gap-2 mb-4">
-                      <h2 className="text-lg font-black text-slate-800">{new Date(date).toLocaleDateString('zh-TW', {month: 'numeric', day: 'numeric', weekday: 'short'})}</h2>
-                      <div className="h-px flex-1 bg-slate-200"></div>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                      {groupedRes[date].map((res: Reservation) => (
-                        <div key={res.id} className={`p-6 rounded-[32px] shadow-sm border relative group transition-all hover:shadow-md ${res.type === '包場' ? 'bg-rose-50 border-rose-200 text-rose-900 shadow-rose-100' : res.type === '外帶' ? 'bg-indigo-50 border-indigo-200 text-indigo-900 shadow-indigo-100' : 'bg-white border-slate-100 text-slate-800'}`}>
-                          <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => handleOpenEdit(res)} className="p-2 hover:bg-slate-200 rounded-lg transition-colors"><Pencil className="w-4 h-4 text-slate-600" /></button>
-                            <button onClick={() => handleDeleteReservation(res)} className="p-2 hover:bg-rose-200 text-rose-500 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
-                          </div>
-                          <div className="flex justify-between items-center mb-4">
-                            <div className="flex items-center gap-2">
-                                <span className={`font-black px-3 py-1.5 rounded-xl text-xs shadow-sm ${res.type === '包場' ? 'bg-rose-200' : res.type === '外帶' ? 'bg-indigo-200' : 'bg-slate-100'}`}>{res.time.substring(0, 5)}</span>
-                                {res.syncStatus === 'pending' && <Loader2 className="w-3 h-3 animate-spin text-orange-500" />}
-                            </div>
-                            <span className="text-[9px] font-black uppercase tracking-widest bg-black/5 px-2 py-1 rounded-md flex items-center gap-1">
-                              {res.type === '外帶' && <ShoppingBag className="w-2.5 h-2.5" />}
-                              {res.type}
-                            </span>
-                          </div>
-                          <h3 className="font-black text-xl mb-1 flex items-center gap-2">
-                            {res.customerName}
-                          </h3>
-                          <div className="flex items-center gap-1.5 text-xs font-bold mb-4 opacity-70"><Phone className="w-3 h-3" /> {res.phone || '無電話'}</div>
-                          
-                          {res.notes && (
-                            <div className="mb-4 p-3 rounded-2xl bg-black/5 text-sm font-medium leading-relaxed italic border-l-4 border-orange-400">
-                              「{res.notes}」
-                            </div>
-                          )}
-
-                          <div className="pt-4 border-t border-black/5 flex justify-between items-center">
-                            <div className="flex items-center gap-2 font-black text-base">
-                              {res.type === '外帶' ? <ShoppingBag className="w-5 h-5 opacity-40 text-indigo-600" /> : <Users className="w-5 h-5 opacity-40" />}
-                              {res.type === '外帶' ? '外帶' : `${res.pax} 位`}
-                            </div>
-                            <div className={`text-base font-black px-4 py-2 rounded-2xl shadow-lg ${res.type === '包場' ? 'bg-rose-600 text-white' : res.type === '外帶' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-white'}`}>
-                              {res.type === '外帶' ? '🛍️ 外帶' : (res.table || '待排')}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <button onClick={() => { setEditingReservation(null); setForm({ date: new Date().toISOString().split('T')[0], time: '12:00', pax: '2', type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90 }); setSelectedTables([]); setIsModalOpen(true); }} className="fixed bottom-8 right-8 w-16 h-16 bg-orange-600 text-white rounded-3xl shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 z-40 transition-transform shadow-orange-200"><Plus className="w-10 h-10" /></button>
-            </div>
-          ) : (
-             <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-               <div className="p-10 bg-slate-900 rounded-[40px] text-white shadow-2xl relative overflow-hidden">
-                  <h1 className="text-4xl font-black relative z-10">資料同步中心</h1>
-                  <p className="text-slate-400 mt-2 relative z-10 font-bold">在此連結 Google 試算表，實現雲端數據串接。</p>
-                  <div className="absolute bottom-0 right-0 p-6 opacity-20"><Layers className="w-32 h-32" /></div>
-               </div>
-               <div className="grid grid-cols-1 gap-4">
-                 {dataSources.map(ds => (
-                   <div key={ds.id} className="bg-white rounded-[32px] shadow-sm border p-6 flex items-center justify-between group">
-                      <div className="flex items-center gap-4">
-                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-colors ${ds.status === 'ERROR' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}><Database className="w-6 h-6" /></div>
-                         <div><h3 className="font-black text-slate-800 text-lg">{ds.name}</h3><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{ds.status === 'ERROR' ? '異常保護中' : ds.lastUpdated}</p></div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => { setSyncingAll(true); handleSyncAll(); }} className="p-3 text-slate-400 hover:text-orange-500 rounded-xl"><RefreshCw className="w-5 h-5" /></button>
-                        <button onClick={() => setDataSources(prev => prev.filter(s => s.id !== ds.id))} className="p-3 text-slate-300 hover:text-rose-500 rounded-xl transition-all"><Unlink className="w-5 h-5" /></button>
-                      </div>
-                   </div>
-                 ))}
-               </div>
-               <div className="bg-white rounded-[40px] shadow-xl border p-8 space-y-6">
-                  <h3 className="font-black text-slate-800 text-xl flex items-center gap-2"><Globe className="text-orange-600" /> 連結新分店</h3>
-                  <div className="space-y-4">
-                    <input type="text" value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="分店名稱" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
-                    <input type="text" value={newUrl} onChange={(e)=>setNewUrl(e.target.value)} placeholder="Google Sheets CSV 連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
-                    <input type="text" value={newWriteUrl} onChange={(e)=>setNewWriteUrl(e.target.value)} placeholder="Apps Script API 連結" className="w-full px-5 py-4 bg-slate-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-orange-500" />
-                  </div>
-                  <button onClick={handleAddSource} disabled={loadingSource} className="w-full bg-slate-900 text-white py-5 rounded-3xl font-black text-lg transition-all active:scale-95 disabled:opacity-50">
-                    {loadingSource ? <Loader2 className="animate-spin inline mr-2" /> : '立即連結並同步'}
-                  </button>
-               </div>
-            </div>
-          )}
+          {renderContent()}
         </div>
       </main>
 
