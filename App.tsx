@@ -1,14 +1,16 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox, RefreshCw, Loader2, X, Save, Globe, FileSpreadsheet, Database, ClipboardList, CheckCircle2, AlertCircle, Info, UserCheck, MessageSquare, Clock, ShieldAlert, CheckCircle, Ban, CalendarDays, Pencil, ExternalLink, MapPin, Unlink, Tag, Layers, Check, Monitor, ArrowRight } from 'lucide-react';
+import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon, Menu, ChefHat, Users, Inbox, RefreshCw, Loader2, X, Save, Globe, FileSpreadsheet, Database, ClipboardList, CheckCircle2, AlertCircle, Info, UserCheck, MessageSquare, Clock, ShieldAlert, CheckCircle, Ban, CalendarDays, Pencil, ExternalLink, MapPin, Unlink, Tag, Layers, Check, Monitor, ArrowRight, WifiOff } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import AnalysisCard from './components/AnalysisCard';
 import { AppView, Reservation, DataSource } from './types';
 import { mapReservationsCSVAsync, fetchCsvStreaming } from './services/dataProcessor';
 
+// 簽章版本，若結構變動則更新此值以清空舊黑名單
+const SIG_VERSION = 'v3'; 
 const STORAGE_KEY_RESERVATIONS = 'bakery_reservations';
 const STORAGE_KEY_SOURCES = 'bakery_sources';
-const STORAGE_KEY_BLACKLIST = 'bakery_sync_blacklist_v2';
+const STORAGE_KEY_BLACKLIST = `bakery_sync_blacklist_${SIG_VERSION}`;
 
 const TABLE_OPTIONS = ['綠1', '綠2', '綠3', '綠4', '綠5', '白1', '白2a', '白2b', '白3', '白4a', '白4b', '白5'];
 const CREATOR_OPTIONS = ['沈家杭', 'TAKA'];
@@ -20,6 +22,7 @@ function App() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSyncingToCloud, setIsSyncingToCloud] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   
   const [syncBlacklist, setSyncBlacklist] = useState<Record<string, number>>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_BLACKLIST);
@@ -67,7 +70,7 @@ function App() {
         const next = { ...prev };
         let changed = false;
         Object.keys(next).forEach(key => {
-          if (now - next[key] > 900000) { 
+          if (now - next[key] > 900000) { // 15分鐘後過期
             delete next[key];
             changed = true;
           }
@@ -87,6 +90,7 @@ function App() {
     localStorage.setItem(STORAGE_KEY_SOURCES, JSON.stringify(dataSources));
   }, [dataSources]);
 
+  // 修改：加入 table 到簽章，確保修改桌號也會視為不同記錄
   const getSignature = (res: any) => {
     if (!res) return "";
     return [
@@ -94,7 +98,8 @@ function App() {
       (res.customerName || '').toString().trim(),
       (res.phone || '').toString().replace(/[\s\-]/g, '').trim(),
       (res.time || '12:00').toString().replace(/:/g, '').substring(0, 4),
-      (res.pax || '1').toString().trim()
+      (res.pax || '1').toString().trim(),
+      (res.table || '').toString().trim() // 加入桌號判斷
     ].join('|').toLowerCase();
   };
 
@@ -121,6 +126,7 @@ function App() {
   const handleSyncAll = async (isSilent = false) => {
     if (dataSources.length === 0) return;
     if (!isSilent) setSyncingAll(true);
+    setSyncError(null);
     try {
         let allRemote: Reservation[] = [];
         for (const source of dataSources) {
@@ -128,14 +134,28 @@ function App() {
               const csvText = await fetchCsvStreaming(source.url, () => {});
               const remoteData = await mapReservationsCSVAsync(csvText, source.id, () => {});
               allRemote = [...allRemote, ...remoteData];
-            } catch (err) { console.error(err); }
+            } catch (err) { 
+              console.error(err); 
+              setSyncError(`無法讀取 ${source.name}，請檢查網路。`);
+            }
         }
 
         setReservations(prev => {
+          // 1. 過濾掉黑名單中的雲端資料
           const processedRemote = allRemote.filter(r => !syncBlacklist[getSignature(r)]);
-          const localOnly = prev.filter(p => p.isLocal && !processedRemote.some(r => r.customerName === p.customerName && r.date === p.date && r.time === p.time));
+          
+          // 2. 保留本地尚未同步成功或正在同步中的資料
+          // 如果雲端已經有了（匹配姓名、日期、時間、桌號），則不顯示本地暂存
+          const localOnly = prev.filter(p => p.isLocal && !processedRemote.some(r => 
+            r.customerName === p.customerName && 
+            r.date === p.date && 
+            r.time === p.time &&
+            r.table === p.table
+          ));
+          
           return [...localOnly, ...processedRemote];
         });
+        
         setDataSources(prev => prev.map(s => ({...s, lastUpdated: new Date().toLocaleString(), status: 'ACTIVE'})));
     } finally { if (!isSilent) setSyncingAll(false); }
   };
@@ -166,10 +186,12 @@ function App() {
     let syncPayload: any = { action: editingReservation ? 'update' : 'create', ...resPayload };
 
     if (editingReservation) {
+      // 修改前，將舊狀態加入黑名單
       const oldSig = getSignature(editingReservation);
       const newBlacklist = { ...syncBlacklist, [oldSig]: Date.now() };
       setSyncBlacklist(newBlacklist);
       localStorage.setItem(STORAGE_KEY_BLACKLIST, JSON.stringify(newBlacklist));
+      
       syncPayload = { ...syncPayload, oldDate: editingReservation.date, oldType: editingReservation.type, oldTime: editingReservation.time.substring(0, 5), oldPax: editingReservation.pax.toString(), oldName: editingReservation.customerName, oldPhone: editingReservation.phone, oldTable: editingReservation.table, oldNotes: editingReservation.notes };
       setReservations(prev => prev.map(r => r.id === editingReservation.id ? resPayload : r));
     } else {
@@ -179,7 +201,10 @@ function App() {
     const success = await syncToGoogleSheet(syncPayload, targetSourceId);
     if (success) {
       setReservations(prev => prev.map(r => r.id === resPayload.id ? { ...r, syncStatus: 'synced' } : r));
+      // 延時同步以等待雲端 CSV 更新
       setTimeout(() => handleSyncAll(true), 15000);
+    } else {
+      alert("雲端同步失敗，僅儲存於本地。");
     }
     setIsSyncingToCloud(false);
     setIsModalOpen(false);
@@ -247,7 +272,7 @@ function App() {
     return details;
   }, [reservations]);
 
-  // Modal 內的時段桌況計算 (基於 form.date, form.time, form.duration)
+  // Modal 內的時段桌況計算
   const { occupiedTableDetails, selectedTimeSlotLabel } = useMemo(() => {
     if (!isModalOpen || !form.date || !form.time) return { occupiedTableDetails: new Map<string, any>(), selectedTimeSlotLabel: '' };
     
@@ -263,11 +288,9 @@ function App() {
       const resDuration = res.duration || 90;
       const resEnd = resStart + resDuration;
       
-      // 判斷重疊邏輯
       if ((startMins < resEnd) && (endMins > resStart)) {
         const endTimeStr = minutesToTime(resEnd);
         (res.table || '').split(', ').filter(Boolean).forEach(t => {
-          // 如果同一桌有多個重疊（極端情況），保留較早結束的資訊或標記多筆
           details.set(t, { name: res.customerName, time: res.time, end: endTimeStr });
         });
       }
@@ -321,6 +344,17 @@ function App() {
         <div className="max-w-4xl mx-auto pb-24">
           {currentView === AppView.RESERVATIONS ? (
             <div className="space-y-6">
+              {/* 狀態列 */}
+              {syncError && (
+                <div className="bg-rose-600 text-white px-6 py-3 rounded-2xl flex items-center justify-between shadow-lg animate-bounce">
+                  <div className="flex items-center gap-3">
+                    <WifiOff className="w-5 h-5" />
+                    <span className="font-black text-sm">{syncError}</span>
+                  </div>
+                  <button onClick={() => handleSyncAll()} className="p-1 hover:bg-white/20 rounded-lg"><RefreshCw className="w-4 h-4" /></button>
+                </div>
+              )}
+
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
                 <div className="space-y-3">
                   <h1 className="text-3xl font-black text-slate-800 tracking-tight">訂位看板</h1>
@@ -332,13 +366,13 @@ function App() {
                     ))}
                   </div>
                 </div>
-                <button onClick={() => handleSyncAll()} disabled={syncingAll} className="p-3 bg-white border rounded-2xl text-xs font-black shadow-sm flex items-center gap-2 active:scale-95 disabled:opacity-50 hover:bg-slate-50">
-                  {syncingAll ? <Loader2 className="animate-spin w-4 h-4" /> : <RefreshCw className="text-orange-600 w-4 h-4" />}
-                  手動重新整理
+                <button onClick={() => handleSyncAll()} disabled={syncingAll} className="p-3 bg-white border rounded-2xl text-xs font-black shadow-sm flex items-center gap-2 active:scale-95 disabled:opacity-50 hover:bg-slate-50 transition-all">
+                  {syncingAll ? <Loader2 className="animate-spin w-4 h-4 text-orange-500" /> : <RefreshCw className="text-orange-600 w-4 h-4" />}
+                  {syncingAll ? '雲端同步中...' : '手動重新整理'}
                 </button>
               </div>
 
-              {/* 頂部：即時桌況摘要 (保留) */}
+              {/* 頂部：即時桌況摘要 */}
               <div className="bg-white rounded-[32px] border border-slate-200 p-6 shadow-sm">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
@@ -349,7 +383,7 @@ function App() {
                   </div>
                   <div className="flex gap-4">
                     <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div><span className="text-[10px] font-bold text-slate-500">空閒</span></div>
-                    <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-rose-500"></div><span className="text-[10px] font-bold text-slate-500">佔用中</span></div>
+                    <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-rose-500"></div><span className="text-[10px] font-bold text-slate-500">使用中</span></div>
                   </div>
                 </div>
                 <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-12 gap-2">
@@ -375,6 +409,13 @@ function App() {
               </div>
 
               <div className="space-y-10">
+                {sortedDates.length === 0 && !syncingAll && (
+                  <div className="py-20 text-center text-slate-400">
+                    <Inbox className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                    <p className="font-black text-lg">尚無訂位資料</p>
+                    <p className="text-sm font-bold opacity-60">點擊右下角按鈕新增一筆。</p>
+                  </div>
+                )}
                 {sortedDates.map(date => (
                   <div key={date}>
                     <div className="flex items-center gap-2 mb-4">
@@ -419,7 +460,7 @@ function App() {
                   </div>
                 ))}
               </div>
-              <button onClick={() => { setEditingReservation(null); setForm({ date: new Date().toISOString().split('T')[0], time: '12:00', pax: 2, type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90 }); setSelectedTables([]); setIsModalOpen(true); }} className="fixed bottom-8 right-8 w-16 h-16 bg-orange-600 text-white rounded-3xl shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 z-40 transition-transform"><Plus className="w-10 h-10" /></button>
+              <button onClick={() => { setEditingReservation(null); setForm({ date: new Date().toISOString().split('T')[0], time: '12:00', pax: 2, type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90 }); setSelectedTables([]); setIsModalOpen(true); }} className="fixed bottom-8 right-8 w-16 h-16 bg-orange-600 text-white rounded-3xl shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 z-40 transition-transform shadow-orange-200"><Plus className="w-10 h-10" /></button>
             </div>
           ) : (
              <div className="space-y-8">
@@ -428,7 +469,6 @@ function App() {
                   <p className="text-slate-400 mt-2 relative z-10 font-bold">在此連結 Google 試算表，實現雲端數據串接。</p>
                   <div className="absolute bottom-0 right-0 p-6 opacity-20"><Layers className="w-32 h-32" /></div>
                </div>
-               {/* 略過資料來源列表... */}
                <div className="grid grid-cols-1 gap-4">
                  {dataSources.map(ds => (
                    <div key={ds.id} className="bg-white rounded-[32px] shadow-sm border p-6 flex items-center justify-between group">
@@ -465,7 +505,6 @@ function App() {
                     <button onClick={() => !isSyncingToCloud && setIsModalOpen(false)} className="p-2 hover:bg-orange-700 rounded-xl transition-colors"><X className="w-7 h-7" /></button>
                   </div>
                   <div className="p-8 space-y-6 max-h-[85vh] overflow-y-auto custom-scrollbar">
-                      {/* 表單內容 */}
                       <div className="grid grid-cols-2 gap-4">
                         <select value={form.creator} onChange={e => setForm({...form, creator: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500">{CREATOR_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}</select>
                         <select value={form.type} onChange={e => setForm({...form, type: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500">{TYPE_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}</select>
@@ -492,7 +531,7 @@ function App() {
                       </div>
                       <input type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="聯絡電話" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500" />
                       
-                      {/* 重點：Modal 內時段桌況顯示區 */}
+                      {/* Modal 內時段桌況預覽 */}
                       <div className="space-y-4 pt-4 border-t border-slate-100">
                         <div className="flex flex-col gap-2">
                           <div className="flex justify-between items-center">
@@ -542,7 +581,7 @@ function App() {
                       <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none min-h-[100px] focus:ring-2 focus:ring-orange-500" placeholder="備註特殊需求..."></textarea>
                       <button onClick={handleSaveReservation} disabled={isSyncingToCloud} className="w-full bg-slate-900 text-white py-5 rounded-[28px] font-black text-lg flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50 transition-all shadow-xl">
                         {isSyncingToCloud ? <Loader2 className="w-6 h-6 animate-spin text-orange-500" /> : <Save className="w-6 h-6" />}
-                        {isSyncingToCloud ? '同步至 Google Sheets...' : '儲存紀錄'}
+                        {isSyncingToCloud ? '正在同步雲端數據...' : '確認儲存並同步'}
                       </button>
                   </div>
               </div>
