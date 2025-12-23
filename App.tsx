@@ -13,6 +13,7 @@ const STORAGE_KEY_BLACKLIST = 'bakery_sync_blacklist_v2';
 const TABLE_OPTIONS = ['綠1', '綠2', '綠3', '綠4', '綠5', '白1', '白2a', '白2b', '白3', '白4a', '白4b', '白5'];
 const CREATOR_OPTIONS = ['沈家杭', 'TAKA'];
 const TYPE_OPTIONS = ['內用', '外帶', '包場'];
+const DURATION_OPTIONS = [30, 60, 90, 120, 150, 180, 240];
 
 function App() {
   const [currentView, setCurrentView] = useState<AppView>(AppView.RESERVATIONS);
@@ -20,7 +21,6 @@ function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSyncingToCloud, setIsSyncingToCloud] = useState(false);
   
-  // 記錄已處理的特徵碼及其有效時間，解決 Google CSV 快取延遲問題
   const [syncBlacklist, setSyncBlacklist] = useState<Record<string, number>>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_BLACKLIST);
     return saved ? JSON.parse(saved) : {};
@@ -37,7 +37,7 @@ function App() {
   
   const [form, setForm] = useState<Partial<Reservation>>({
     date: new Date().toISOString().split('T')[0],
-    time: '12:00', pax: 2, type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0]
+    time: '12:00', pax: 2, type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90
   });
 
   const [editingReservation, setEditingReservation] = useState<Reservation | null>(null);
@@ -52,7 +52,14 @@ function App() {
   const [syncingAll, setSyncingAll] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // 清理過期黑名單 (15 分鐘)
+  // 監聽包場邏輯：包場時自動設定時長為 4 小時並全選桌位
+  useEffect(() => {
+    if (isModalOpen && form.type === '包場') {
+      setForm(prev => ({ ...prev, duration: 240 }));
+      setSelectedTables([...TABLE_OPTIONS]);
+    }
+  }, [form.type, isModalOpen]);
+
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
@@ -150,6 +157,7 @@ function App() {
       table: tableString,
       notes: (form.notes || '').trim(),
       creator: form.creator || CREATOR_OPTIONS[0],
+      duration: form.duration || 90,
       isLocal: true,
       syncStatus: 'pending',
       sourceId: targetSourceId
@@ -193,7 +201,7 @@ function App() {
 
   const handleOpenEdit = (res: Reservation) => {
     setEditingReservation(res);
-    setForm({ ...res });
+    setForm({ ...res, duration: res.duration || 90 });
     setSelectedTables((res.table || '').split(', ').filter(Boolean));
     setIsModalOpen(true);
   };
@@ -215,22 +223,29 @@ function App() {
     return hrs * 60 + (mins || 0);
   };
 
+  // 強化衝突計算：根據每筆訂位實際時長判斷衝突
   const { occupiedTableDetails } = useMemo(() => {
     if (!isModalOpen || !form.date || !form.time) return { occupiedTableDetails: new Map<string, {name: string, time: string}>() };
+    
     const startMins = timeToMinutes(form.time);
-    const endMins = startMins + 90;
+    const endMins = startMins + (form.duration || 90);
     const details = new Map<string, {name: string, time: string}>();
+    
     reservations.forEach(res => {
       if (editingReservation && res.id === editingReservation.id) return; 
       if (res.date !== form.date) return;
+      
       const resStart = timeToMinutes(res.time);
-      const resEnd = resStart + 90;
+      const resDuration = res.duration || 90;
+      const resEnd = resStart + resDuration;
+      
+      // 判斷重疊邏輯
       if ((startMins < resEnd) && (endMins > resStart)) {
         (res.table || '').split(', ').filter(Boolean).forEach(t => details.set(t, { name: res.customerName, time: res.time }));
       }
     });
     return { occupiedTableDetails: details };
-  }, [isModalOpen, form.date, form.time, reservations, editingReservation]);
+  }, [isModalOpen, form.date, form.time, form.duration, reservations, editingReservation]);
 
   const filteredReservations = useMemo(() => {
     const s = searchTerm.toLowerCase();
@@ -241,19 +256,13 @@ function App() {
     );
   }, [reservations, searchTerm]);
 
-  // 核心更新：將資料先進行全局排序（日期由近到遠，同日期按時間排序）
   const groupedRes = useMemo(() => {
-    // 1. 先複製並排序
     const sorted = [...filteredReservations].sort((a, b) => {
-      // 日期排序 (Ascending)
-      const dateA = new Date(a.date).getTime();
-      const dateB = new Date(b.date).getTime();
-      if (dateA !== dateB) return dateA - dateB;
-      // 時間排序 (Ascending)
+      const dateCmp = a.date.localeCompare(b.date);
+      if (dateCmp !== 0) return dateCmp;
       return a.time.localeCompare(b.time);
     });
 
-    // 2. 進行分組
     return sorted.reduce((acc: any, res) => {
       acc[res.date] = acc[res.date] || [];
       acc[res.date].push(res);
@@ -261,9 +270,8 @@ function App() {
     }, {});
   }, [filteredReservations]);
 
-  // 分組標題排序
   const sortedDates = useMemo(() => 
-    Object.keys(groupedRes).sort((a, b) => new Date(a).getTime() - new Date(b).getTime()), 
+    Object.keys(groupedRes).sort((a, b) => a.localeCompare(b)), 
     [groupedRes]
   );
 
@@ -342,7 +350,7 @@ function App() {
                           )}
 
                           <div className="pt-4 border-t border-black/5 flex justify-between items-center">
-                            <div className="flex items-center gap-2 font-black text-base"><Users className="w-5 h-5 opacity-40" /> {res.pax} 位</div>
+                            <div className="flex items-center gap-2 font-black text-base"><Users className="w-5 h-5 opacity-40" /> {res.pax} 位 ({res.duration || 90}m)</div>
                             <div className="text-base font-black px-4 py-2 rounded-2xl bg-slate-900 text-white shadow-lg">{res.table || '待排'}</div>
                           </div>
                         </div>
@@ -351,7 +359,7 @@ function App() {
                   </div>
                 ))}
               </div>
-              <button onClick={() => { setEditingReservation(null); setForm({ date: new Date().toISOString().split('T')[0], time: '12:00', pax: 2, type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0] }); setSelectedTables([]); setIsModalOpen(true); }} className="fixed bottom-8 right-8 w-16 h-16 bg-orange-600 text-white rounded-3xl shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 z-40 transition-transform"><Plus className="w-10 h-10" /></button>
+              <button onClick={() => { setEditingReservation(null); setForm({ date: new Date().toISOString().split('T')[0], time: '12:00', pax: 2, type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90 }); setSelectedTables([]); setIsModalOpen(true); }} className="fixed bottom-8 right-8 w-16 h-16 bg-orange-600 text-white rounded-3xl shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 z-40 transition-transform"><Plus className="w-10 h-10" /></button>
             </div>
           ) : (
              <div className="space-y-8">
@@ -400,9 +408,21 @@ function App() {
                         <select value={form.creator} onChange={e => setForm({...form, creator: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500">{CREATOR_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}</select>
                         <select value={form.type} onChange={e => setForm({...form, type: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-orange-500">{TYPE_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}</select>
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <input type="date" value={form.date} onChange={e => setForm({...form, date: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
-                        <input type="time" value={form.time} onChange={e => setForm({...form, time: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="col-span-1">
+                          <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">日期</label>
+                          <input type="date" value={form.date} onChange={e => setForm({...form, date: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none text-sm" />
+                        </div>
+                        <div className="col-span-1">
+                          <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">時間</label>
+                          <input type="time" value={form.time} onChange={e => setForm({...form, time: e.target.value})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none text-sm" />
+                        </div>
+                        <div className="col-span-1">
+                          <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">時長 (分)</label>
+                          <select value={form.duration} onChange={e => setForm({...form, duration: parseInt(e.target.value)})} className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none text-sm focus:ring-2 focus:ring-orange-500">
+                            {DURATION_OPTIONS.map(d => <option key={d} value={d}>{d} 分鐘</option>)}
+                          </select>
+                        </div>
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="顧客姓名" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
@@ -420,6 +440,7 @@ function App() {
                                 isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md scale-105' : isOccupied ? 'bg-slate-100 text-slate-300 border-slate-50 opacity-60' : 'bg-slate-50 text-slate-500 border-slate-100 hover:border-slate-300'
                               }`}>
                                 <span className="text-xs font-black">{t}</span>
+                                {isOccupied && <span className="text-[8px] font-bold mt-1 opacity-50">{occupiedTableDetails.get(t)?.time}已訂</span>}
                               </button>
                             );
                           })}

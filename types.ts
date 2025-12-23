@@ -11,6 +11,7 @@ export interface Reservation {
   table?: string;
   notes?: string;
   creator?: string; // 沈家杭 | TAKA
+  duration?: number; // 用餐分鐘數
   isLocal?: boolean;
   syncStatus?: 'synced' | 'pending' | 'failed';
 }

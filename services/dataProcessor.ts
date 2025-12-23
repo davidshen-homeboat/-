@@ -56,12 +56,21 @@ const fastNormalizeDate = (raw: string): string => {
   const parts = clean.split('/');
   
   try {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1; // 1-12
+
     let year, month, day;
-    const currentYear = new Date().getFullYear();
     if (parts.length === 2) {
         year = currentYear;
         month = parseInt(parts[0]);
         day = parseInt(parts[1]);
+        
+        // 跨年偵測邏輯：
+        // 如果現在是 10, 11, 12 月，但輸入的月份是 1, 2, 3 月，自動判定為明年
+        if (currentMonth >= 10 && month <= 3) {
+          year += 1;
+        }
     } else if (parts.length === 3) {
         year = parseInt(parts[0]);
         month = parseInt(parts[1]);
@@ -90,7 +99,6 @@ export const mapReservationsCSVAsync = async (
     const line = lines[i];
     if (!line || line.trim().length < 3) continue;
 
-    // 強化 CSV 行解析，處理引號包裹的逗號
     let row: string[] = [];
     let inQuotes = false;
     let currentValue = '';
@@ -107,7 +115,6 @@ export const mapReservationsCSVAsync = async (
     if (row[0]) {
       const nDate = fastNormalizeDate(row[0]);
       if (nDate) {
-        // 欄位映射：A0, B1, C2, D3, E4, F5, G6, H7, I8, J9, K10
         result.push({
           id: `rc-${sourceId}-${i}`,
           sourceId,
@@ -120,6 +127,7 @@ export const mapReservationsCSVAsync = async (
           creator: row[7] || '',
           table: row[8] || '',
           notes: row[10] || '',
+          duration: row[11] ? parseInt(row[11]) : 90, // 假設 CSV 若有第 L 欄則讀取時長
           isLocal: false
         });
       }
