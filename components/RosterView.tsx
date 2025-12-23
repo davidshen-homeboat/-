@@ -150,7 +150,7 @@ const RosterView: React.FC = () => {
           <div className="bg-white p-6 rounded-2xl border border-rose-100 text-left text-xs font-medium text-rose-800 space-y-2 max-w-lg shadow-sm">
             <p className="font-black flex items-center gap-2 text-rose-900"><Globe className="w-4 h-4" /> 設定檢查清單：</p>
             <ul className="list-disc pl-5 space-y-1">
-              <li>確保試算表已設為「檔案 > 共用 > <b>發佈到網路</b>」</li>
+              <li>確保試算表已設為「檔案 &gt; 共用 &gt; <b>發佈到網路</b>」</li>
               <li>發佈範圍必須選擇「<b>全份文件</b>」</li>
               <li>發佈格式建議選擇「<b>網頁</b>」</li>
               <li>複製視窗中產生的 `pubhtml` 連結並貼在上方</li>
@@ -226,7 +226,7 @@ const RosterView: React.FC = () => {
            <p className="text-slate-400 font-bold mt-3 max-w-sm mx-auto leading-relaxed">請在上方輸入您 Google Sheets 的「發佈到網路」連結，我們將自動為您整理所有月份的排班資料。</p>
            <div className="mt-10 p-5 bg-indigo-50 rounded-3xl border border-indigo-100 text-indigo-700 text-xs font-black flex items-center gap-3">
               <span className="bg-indigo-600 text-white px-2 py-0.5 rounded-lg">教學</span>
-              <span>點擊 Google 試算表 > 檔案 > 共用 > 發佈到網路 (全份文件)</span>
+              <span>點擊 Google 試算表 &gt; 檔案 &gt; 共用 &gt; 發佈到網路 (全份文件)</span>
            </div>
         </div>
       )}
