@@ -1,9 +1,8 @@
 
+import { CalendarDays, RefreshCw, Loader2, Database, AlertCircle, Store, Globe, Link as LinkIcon, ChevronRight, Plus, Trash2, HelpCircle, Info, ExternalLink, MousePointer2, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
 import React, { useState, useEffect } from 'react';
-import { CalendarDays, RefreshCw, Loader2, Database, AlertCircle, Store, Globe, Link as LinkIcon, ChevronRight, Plus, Trash2, HelpCircle, Info, ExternalLink, MousePointer2 } from 'lucide-react';
 import { RosterData, SheetTab } from '../types';
-import { fetchCsvStreaming } from '../services/dataProcessor';
-import { parseRosterCSV, fetchSheetTabs } from '../services/rosterProcessor';
+import { parseRosterCSV, fetchSheetTabsWithDiagnostic, fetchRosterCsvWithProxy, FetchDiagnostic } from '../services/rosterProcessor';
 
 const STORAGE_KEY_ROSTER_MASTER = 'bakery_roster_master_url';
 const STORAGE_KEY_ROSTER_TABS = 'bakery_roster_tabs_cache';
@@ -20,6 +19,8 @@ const RosterView: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [detectingTabs, setDetectingTabs] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diagnostic, setDiagnostic] = useState<FetchDiagnostic | undefined>(undefined);
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
 
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [manualName, setManualName] = useState('');
@@ -40,9 +41,17 @@ const RosterView: React.FC = () => {
     if (!masterUrl) return alert("請先輸入 Google Sheets 發佈連結");
     setDetectingTabs(true);
     setError(null);
+    setDiagnostic(undefined);
+    setShowDiagnostic(false);
+    
     try {
-      const detectedTabs = await fetchSheetTabs(masterUrl);
-      if (detectedTabs.length === 0) throw new Error("偵測不到任何分頁，請確認是否發佈了「整份文件」。");
+      const { tabs: detectedTabs, diagnostic: diag } = await fetchSheetTabsWithDiagnostic(masterUrl);
+      setDiagnostic(diag);
+      
+      if (detectedTabs.length === 0) {
+        throw new Error("偵測不到任何分頁，這通常代表 Google Workspace 權限限制或尚未發佈為「整份文件」。");
+      }
+      
       setTabs(detectedTabs);
       if (detectedTabs.length > 0) setActiveGid(detectedTabs[0].gid);
     } catch (err: any) {
@@ -78,7 +87,7 @@ const RosterView: React.FC = () => {
       const sheetId = sheetIdMatch[1];
       const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
       
-      const csv = await fetchCsvStreaming(csvUrl, () => {});
+      const csv = await fetchRosterCsvWithProxy(csvUrl);
       const data = parseRosterCSV(csv);
       setRoster(data);
     } catch (err: any) {
@@ -216,35 +225,63 @@ const RosterView: React.FC = () => {
         <div className="space-y-6">
           <div className="bg-rose-50 border border-rose-200 rounded-[32px] p-10 flex flex-col items-center text-center">
             <AlertCircle className="w-12 h-12 text-rose-500 mb-4" />
-            <h3 className="font-black text-rose-800 text-xl mb-2">無法自動偵測分頁</h3>
+            <h3 className="font-black text-rose-800 text-xl mb-2">連線或解析失敗</h3>
             <p className="text-rose-600 font-bold max-w-md mb-6">{error}</p>
             
             <div className="bg-white w-full max-w-2xl p-8 rounded-[32px] border border-rose-100 text-left shadow-sm space-y-6">
               <div className="flex items-center gap-3 text-rose-900 border-b pb-4 border-rose-50">
                 <MousePointer2 className="w-5 h-5" />
-                <span className="font-black text-sm uppercase tracking-widest">強烈建議：改用手動新增</span>
+                <span className="font-black text-sm uppercase tracking-widest">排錯建議</span>
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="space-y-3">
                   <div className="w-8 h-8 bg-rose-600 text-white rounded-lg flex items-center justify-center font-black text-xs">01</div>
-                  <p className="text-xs font-black text-slate-800">在瀏覽器開啟該 Google 試算表，點擊你要查看的月份分頁。</p>
+                  <p className="text-xs font-black text-slate-800">請確認試算表已設定為「發佈到網路 (整份文件)」。</p>
                 </div>
                 <div className="space-y-3">
                   <div className="w-8 h-8 bg-rose-600 text-white rounded-lg flex items-center justify-center font-black text-xs">02</div>
                   <p className="text-xs font-black text-slate-800">
-                    查看網址列最後一段：<br/>
-                    <code className="bg-slate-100 px-2 py-1 rounded text-[10px] text-rose-600 mt-2 block">.../edit#gid=<span className="bg-yellow-200">12345678</span></code>
+                    公司帳號常因內部限制導致抓取失敗，請聯絡 IT 或嘗試手動輸入 GID。
                   </p>
                 </div>
               </div>
+
+              {/* Diagnostic Toggle */}
+              {diagnostic && (
+                <div className="mt-4 border-t border-rose-50 pt-4">
+                  <button 
+                    onClick={() => setShowDiagnostic(!showDiagnostic)}
+                    className="flex items-center gap-2 text-[10px] font-black text-slate-400 hover:text-slate-600 uppercase tracking-widest"
+                  >
+                    <Terminal className="w-3 h-3" />
+                    {showDiagnostic ? '隱藏診斷資訊' : '查看技術診斷資訊'}
+                    {showDiagnostic ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  </button>
+                  
+                  {showDiagnostic && (
+                    <div className="mt-3 p-4 bg-slate-900 rounded-2xl font-mono text-[10px] text-emerald-400 overflow-hidden shadow-inner">
+                      <div className="mb-2 text-slate-400 border-b border-slate-700 pb-1">Fetch Metadata:</div>
+                      <div>Status: {diagnostic.status} ({diagnostic.statusText})</div>
+                      <div>Proxy: {diagnostic.proxyName}</div>
+                      <div className="mt-2 text-slate-400 border-b border-slate-700 pb-1">Response Head:</div>
+                      <div className="break-all whitespace-pre-wrap opacity-80">{diagnostic.contentSnippet}...</div>
+                      {diagnostic.isLoginWall && (
+                        <div className="mt-2 p-2 bg-rose-900/50 text-rose-300 rounded-lg border border-rose-700">
+                          ⚠️ 系統判定此為「Google 登錄牆」，程式無法穿透身份驗證。
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
               
               <div className="pt-4">
                  <button 
                   onClick={() => { setShowManualAdd(true); setError(null); }}
                   className="w-full py-4 bg-rose-600 text-white rounded-2xl font-black text-sm shadow-xl hover:bg-rose-700 transition-all flex items-center justify-center gap-2"
                  >
-                   <Plus className="w-4 h-4" /> 我已找到 GID，立即手動輸入
+                   <Plus className="w-4 h-4" /> 嘗試手動輸入 GID
                  </button>
               </div>
             </div>

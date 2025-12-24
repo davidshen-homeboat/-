@@ -7,7 +7,6 @@ export const fetchCsvStreaming = async (
 ): Promise<string> => {
   let targetUrl = url;
   
-  // 基礎 URL 轉換邏輯
   if (!url.includes('output=csv') && !url.includes('format=csv')) {
     if (url.includes('/spreadsheets/d/') && !url.includes('/pub')) {
       const idMatch = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
@@ -18,7 +17,6 @@ export const fetchCsvStreaming = async (
     }
   }
 
-  // 新增快取破壞 (Cache Busting) 參數，強迫 Google 伺服器回傳最新資料
   const cacheBuster = `&t=${Date.now()}`;
   const finalUrl = targetUrl.includes('?') ? `${targetUrl}${cacheBuster}` : `${targetUrl}?${cacheBuster}`;
 
@@ -60,18 +58,20 @@ export const fetchCsvStreaming = async (
   return decodedText;
 };
 
-// 驗證內容是否為合法的訂位 CSV，防止讀取到 Google 登入頁面
+// 驗證內容是否為合法的訂位 CSV，強化公司帳號權限偵測
 const validateCsvContent = (text: string) => {
-  if (text.includes('google-site-verification') || text.includes('Sign in') || text.includes('<!DOCTYPE html>')) {
-    throw new Error("讀取到無效頁面 (可能是權限不足或需要重新登入 Google)");
+  if (text.includes('ServiceLogin') || text.includes('AccountChooser') || text.includes('data-google-domain-action')) {
+    throw new Error("偵測到公司帳號權限限制。請確保試算表已「發佈到網路」，且共用設定為「任何知道連結的人」而非僅限內部成員。");
+  }
+  if (text.includes('google-site-verification') || text.includes('<!DOCTYPE html>')) {
+    throw new Error("讀取到無效頁面。請確認 Google Sheets 連結是否正確發佈。");
   }
   if (text.length < 20) {
     throw new Error("CSV 資料過短或為空");
   }
-  // 檢查是否包含關鍵標題
   const hasHeader = ['日期', '姓名', '電話', '時間'].some(key => text.includes(key));
   if (!hasHeader) {
-    throw new Error("找不到正確的資料欄位，請確認試算表格式是否正確");
+    throw new Error("找不到正確的資料欄位。請檢查試算表第一列是否包含日期、姓名等標題。");
   }
 };
 
