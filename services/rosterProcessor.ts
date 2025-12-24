@@ -24,6 +24,25 @@ const decodeUnicode = (str: string): string => {
 };
 
 /**
+ * 具備逾時功能的 fetch 封裝
+ */
+const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout = 6000): Promise<Response> => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(id);
+    return response;
+  } catch (e) {
+    clearTimeout(id);
+    throw e;
+  }
+};
+
+/**
  * 從 HTML 字串中提取分頁資訊
  */
 const parseTabsFromHtml = (html: string): SheetTab[] => {
@@ -45,14 +64,11 @@ const parseTabsFromHtml = (html: string): SheetTab[] => {
     });
   }
 
-  // 2. 深度解析 bootstrapData (Google Sheets 存放元數據的主要腳本變數)
-  // 尋找像是 _W_bootstrapData = {...}; 的區塊
+  // 2. 深度解析 bootstrapData
   const bootstrapMatch = html.match(/_W_bootstrapData\s*=\s*({.+?});/s);
   if (bootstrapMatch) {
     try {
       const bootstrapJson = JSON.parse(bootstrapMatch[1]);
-      // 通常在 bootstrapJson.changes.sheets 或類似路徑下
-      // 這裡採用遍歷 JSON 的方式搜尋所有 gid/name 對
       const searchJson = (obj: any) => {
         if (!obj || typeof obj !== 'object') return;
         if (obj.gid !== undefined && obj.name !== undefined) {
@@ -66,16 +82,16 @@ const parseTabsFromHtml = (html: string): SheetTab[] => {
       };
       searchJson(bootstrapJson);
     } catch (e) {
-      console.debug("BootstrapData parse failed, falling back to regex.");
+      console.debug("BootstrapData parse failed.");
     }
   }
 
-  // 3. 強化版 Regex 解析 (多種變體模式)
+  // 3. 強化版 Regex 解析
   const gidPatterns = [
     /"gid"\s*:\s*"?(\d+)"?\s*,\s*"name"\s*:\s*"([^"]+)"/g,
     /"id"\s*:\s*"?(\d+)"?\s*,\s*"name"\s*:\s*"([^"]+)"/g,
     /\{"1":(\d+),"2":"([^"]+)"/g,
-    /\[(\d+),"([^"]+)",\d+\]/g // 數組形式的備援
+    /\[(\d+),"([^"]+)",\d+\]/g
   ];
 
   gidPatterns.forEach(pattern => {
@@ -83,7 +99,6 @@ const parseTabsFromHtml = (html: string): SheetTab[] => {
     matches.forEach(match => {
       const gid = match[1];
       const name = decodeUnicode(match[2]);
-      // 過濾掉明顯不是分頁名稱的垃圾字串
       if (gid && name && name.length < 50 && !tabs.find(t => t.gid === gid) && !name.includes('{') && !name.includes(':')) {
         tabs.push({ name, gid });
       }
@@ -94,41 +109,46 @@ const parseTabsFromHtml = (html: string): SheetTab[] => {
 };
 
 export const fetchSheetTabs = async (pubHtmlUrl: string): Promise<SheetTab[]> => {
-  let targetUrl = pubHtmlUrl.trim();
-  if (targetUrl.includes('/edit')) {
-    targetUrl = targetUrl.replace(/\/edit.*$/, '/pubhtml');
+  let cleanUrl = pubHtmlUrl.trim().split('#')[0]; // 移除 GID 片段以免干擾代理
+  if (cleanUrl.includes('/edit')) {
+    cleanUrl = cleanUrl.replace(/\/edit.*$/, '/pubhtml');
   }
 
   const proxies = [
-    (url: string) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-    (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-    (url: string) => `https://thingproxy.freeboard.io/fetch/${url}`
+    { name: 'Codetabs', url: (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` },
+    { name: 'AllOrigins', url: (url: string) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}` },
+    { name: 'CorsProxyIO', url: (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}` },
+    { name: 'ThingProxy', url: (url: string) => `https://thingproxy.freeboard.io/fetch/${url}` }
   ];
 
   let lastError = null;
 
-  for (const getProxyUrl of proxies) {
+  for (const proxy of proxies) {
     try {
-      const proxyUrl = getProxyUrl(targetUrl);
-      const response = await fetch(proxyUrl);
-      if (!response.ok) continue;
+      console.log(`Trying proxy: ${proxy.name}...`);
+      const targetProxyUrl = proxy.url(cleanUrl);
+      const response = await fetchWithTimeout(targetProxyUrl);
+      
+      if (!response.ok) {
+        console.warn(`Proxy ${proxy.name} returned status ${response.status}`);
+        continue;
+      }
 
       let html = '';
-      if (proxyUrl.includes('allorigins')) {
+      if (proxy.name === 'AllOrigins') {
         const data = await response.json();
         html = data.contents;
       } else {
         html = await response.text();
       }
 
-      if (!html || html.length < 100) continue;
+      if (!html || html.length < 200) continue;
 
-      // 預處理 HTML：移除極端空白以優化正則匹配
       const cleanHtml = html.replace(/\s{2,}/g, ' ');
-
       const detectedTabs = parseTabsFromHtml(cleanHtml);
+      
       if (detectedTabs.length > 0) {
-        // 排序：盡量讓含有月份名稱的排前面
+        console.log(`Successfully detected ${detectedTabs.length} tabs via ${proxy.name}`);
         return detectedTabs.sort((a, b) => {
           const aHasMonth = /月/.test(a.name);
           const bHasMonth = /月/.test(b.name);
@@ -139,16 +159,17 @@ export const fetchSheetTabs = async (pubHtmlUrl: string): Promise<SheetTab[]> =>
       }
     } catch (err) {
       lastError = err;
-      console.warn("Proxy failed, trying next...", err);
+      console.warn(`Proxy ${proxy.name} failed:`, err);
     }
   }
 
-  const urlGidMatch = targetUrl.match(/gid=([0-9]+)/);
+  // 最後嘗試：若網址本身帶有 GID，至少回傳該分頁
+  const urlGidMatch = pubHtmlUrl.match(/gid=([0-9]+)/);
   if (urlGidMatch) {
-    return [{ name: "目前分頁", gid: urlGidMatch[1] }];
+    return [{ name: "預設分頁 (從網址提取)", gid: urlGidMatch[1] }];
   }
 
-  throw lastError || new Error("無法偵測分頁。請確認試算表已發佈「全份文件」，而非僅單一工作表。");
+  throw new Error("偵測工作表失敗。可能是所有代理伺服器暫時無法連線，建議您使用「手動新增分頁」輸入 GID。");
 };
 
 export const parseRosterCSV = (csvText: string): RosterData => {
