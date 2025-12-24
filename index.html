@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="zh-TW">
   <head>
@@ -42,14 +43,16 @@
   <body class="bg-slate-50 text-slate-900 antialiased">
     <div id="root"></div>
     <script>
-      if ('serviceWorker' in navigator) {
+      // 增加 Origin 檢查，避免在 preview 環境下嘗試註冊不匹配的 SW
+      if ('serviceWorker' in navigator && window.location.origin.includes('goog') === false) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/service-worker.js')
             .then(registration => {
               console.log('SW registered: ', registration);
             })
             .catch(registrationError => {
-              console.log('SW registration failed: ', registrationError);
+              // 在沙盒環境中不拋出報警，僅安靜記錄
+              console.debug('SW registration skipped or failed: ', registrationError);
             });
         });
       }

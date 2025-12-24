@@ -8,14 +8,15 @@ import { RosterData, StaffRoster, RosterShift, SheetTab } from "../types";
 const decodeUnicode = (str: string): string => {
   let decoded = str;
   try {
-    // 第一層解碼
+    // 處理 JSON 格式的轉義
     decoded = JSON.parse(`"${str.replace(/"/g, '\\"')}"`);
   } catch {
+    // 暴力正則替換
     decoded = str.replace(/\\u([a-fA-F0-9]{4})/g, (_, grp) => 
       String.fromCharCode(parseInt(grp, 16))
     );
   }
-  // 處理可能的二次轉義 (\\u -> \u)
+  // 處理二次轉義 (\\u -> \u)
   if (decoded.includes('\\u')) {
     return decodeUnicode(decoded.replace(/\\\\u/g, '\\u'));
   }
@@ -23,7 +24,7 @@ const decodeUnicode = (str: string): string => {
 };
 
 /**
- * 核心偵測邏輯：從 HTML 字串中提取分頁資訊
+ * 從 HTML 字串中提取分頁資訊
  */
 const parseTabsFromHtml = (html: string): SheetTab[] => {
   const tabs: SheetTab[] = [];
@@ -44,12 +45,37 @@ const parseTabsFromHtml = (html: string): SheetTab[] => {
     });
   }
 
-  // 2. 暴力 Regex 解析 (針對混淆或隱藏在腳本中的 JSON 資料)
-  // 模式 A: 標準 GID 格式
+  // 2. 深度解析 bootstrapData (Google Sheets 存放元數據的主要腳本變數)
+  // 尋找像是 _W_bootstrapData = {...}; 的區塊
+  const bootstrapMatch = html.match(/_W_bootstrapData\s*=\s*({.+?});/s);
+  if (bootstrapMatch) {
+    try {
+      const bootstrapJson = JSON.parse(bootstrapMatch[1]);
+      // 通常在 bootstrapJson.changes.sheets 或類似路徑下
+      // 這裡採用遍歷 JSON 的方式搜尋所有 gid/name 對
+      const searchJson = (obj: any) => {
+        if (!obj || typeof obj !== 'object') return;
+        if (obj.gid !== undefined && obj.name !== undefined) {
+          const gid = String(obj.gid);
+          const name = decodeUnicode(String(obj.name));
+          if (gid && name && !tabs.find(t => t.gid === gid) && !name.includes('{')) {
+            tabs.push({ name, gid });
+          }
+        }
+        Object.values(obj).forEach(searchJson);
+      };
+      searchJson(bootstrapJson);
+    } catch (e) {
+      console.debug("BootstrapData parse failed, falling back to regex.");
+    }
+  }
+
+  // 3. 強化版 Regex 解析 (多種變體模式)
   const gidPatterns = [
     /"gid"\s*:\s*"?(\d+)"?\s*,\s*"name"\s*:\s*"([^"]+)"/g,
     /"id"\s*:\s*"?(\d+)"?\s*,\s*"name"\s*:\s*"([^"]+)"/g,
-    /\{"1":(\d+),"2":"([^"]+)"/g // Google 內部的壓縮格式備援
+    /\{"1":(\d+),"2":"([^"]+)"/g,
+    /\[(\d+),"([^"]+)",\d+\]/g // 數組形式的備援
   ];
 
   gidPatterns.forEach(pattern => {
@@ -57,7 +83,8 @@ const parseTabsFromHtml = (html: string): SheetTab[] => {
     matches.forEach(match => {
       const gid = match[1];
       const name = decodeUnicode(match[2]);
-      if (gid && name && !tabs.find(t => t.gid === gid) && !name.includes('{')) {
+      // 過濾掉明顯不是分頁名稱的垃圾字串
+      if (gid && name && name.length < 50 && !tabs.find(t => t.gid === gid) && !name.includes('{') && !name.includes(':')) {
         tabs.push({ name, gid });
       }
     });
@@ -80,7 +107,6 @@ export const fetchSheetTabs = async (pubHtmlUrl: string): Promise<SheetTab[]> =>
 
   let lastError = null;
 
-  // 嘗試多個代理伺服器
   for (const getProxyUrl of proxies) {
     try {
       const proxyUrl = getProxyUrl(targetUrl);
@@ -97,9 +123,19 @@ export const fetchSheetTabs = async (pubHtmlUrl: string): Promise<SheetTab[]> =>
 
       if (!html || html.length < 100) continue;
 
-      const detectedTabs = parseTabsFromHtml(html);
+      // 預處理 HTML：移除極端空白以優化正則匹配
+      const cleanHtml = html.replace(/\s{2,}/g, ' ');
+
+      const detectedTabs = parseTabsFromHtml(cleanHtml);
       if (detectedTabs.length > 0) {
-        return detectedTabs;
+        // 排序：盡量讓含有月份名稱的排前面
+        return detectedTabs.sort((a, b) => {
+          const aHasMonth = /月/.test(a.name);
+          const bHasMonth = /月/.test(b.name);
+          if (aHasMonth && !bHasMonth) return -1;
+          if (!aHasMonth && bHasMonth) return 1;
+          return 0;
+        });
       }
     } catch (err) {
       lastError = err;
@@ -107,13 +143,12 @@ export const fetchSheetTabs = async (pubHtmlUrl: string): Promise<SheetTab[]> =>
     }
   }
 
-  // 如果所有代理都失敗，但網址本身有 GID，則回傳單一分頁
   const urlGidMatch = targetUrl.match(/gid=([0-9]+)/);
   if (urlGidMatch) {
     return [{ name: "目前分頁", gid: urlGidMatch[1] }];
   }
 
-  throw lastError || new Error("無法從連結中取得內容。請確認試算表已發佈，且連結正確。");
+  throw lastError || new Error("無法偵測分頁。請確認試算表已發佈「全份文件」，而非僅單一工作表。");
 };
 
 export const parseRosterCSV = (csvText: string): RosterData => {
@@ -134,11 +169,9 @@ export const parseRosterCSV = (csvText: string): RosterData => {
 
   if (lines.length < 6) throw new Error("班表格式不正確 (行數不足)");
 
-  // A1 (0,0) 是月份, C1 (0,2) 是年份
   const month = lines[0][0] || "未知";
   const year = lines[0][2] || "未知";
 
-  // 第4列 (index 3) 從 E 欄 (index 4) 開始是日期
   const dateRow = lines[3];
   const days: number[] = [];
   for (let i = 4; i < dateRow.length; i++) {
