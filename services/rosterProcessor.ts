@@ -1,10 +1,31 @@
 
 import { RosterData, StaffRoster, RosterShift, SheetTab } from "../types";
 
+/**
+ * 解碼 Unicode 轉義字元 (如 \u6708 -> 月)
+ */
+const decodeUnicode = (str: string): string => {
+  try {
+    // 嘗試使用 JSON.parse 處理標準轉義字串
+    return JSON.parse(`"${str}"`);
+  } catch {
+    // 備援：手動正則替換
+    return str.replace(/\\u([a-fA-F0-9]{4})/g, (_, grp) => 
+      String.fromCharCode(parseInt(grp, 16))
+    );
+  }
+};
+
 export const fetchSheetTabs = async (pubHtmlUrl: string): Promise<SheetTab[]> => {
   try {
+    // 網址正規化：如果使用者貼入 /edit 網址，自動轉為 /pubhtml
+    let targetUrl = pubHtmlUrl.trim();
+    if (targetUrl.includes('/edit')) {
+      targetUrl = targetUrl.replace(/\/edit.*$/, '/pubhtml');
+    }
+    
     // 使用 AllOrigins 代理來繞過 CORS 限制
-    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(pubHtmlUrl)}`;
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
     const response = await fetch(proxyUrl);
     
     if (!response.ok) throw new Error("無法連接到代理伺服器。");
@@ -18,37 +39,37 @@ export const fetchSheetTabs = async (pubHtmlUrl: string): Promise<SheetTab[]> =>
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
     
-    // 方案一：從 Google Sheets pubhtml 底部選單解析
+    // 方案一：從 Google Sheets pubhtml 底部選單解析 (HTML 結構)
     const menuItems = doc.querySelectorAll('#sheet-menu li a');
-    
     if (menuItems.length > 0) {
       menuItems.forEach(item => {
         const name = item.textContent?.trim() || '';
         const href = item.getAttribute('href') || '';
-        // 提取 gid=12345 或 #gid=12345
         const gidMatch = href.match(/gid=([0-9]+)/);
         const gid = gidMatch ? gidMatch[1] : href.replace('#', '');
         
-        if (name && gid) {
-          // 避免重複
-          if (!tabs.find(t => t.gid === gid)) tabs.push({ name, gid });
+        if (name && gid && !tabs.find(t => t.gid === gid)) {
+          tabs.push({ name, gid });
         }
       });
     } 
     
-    // 方案二：如果選單解析失敗，嘗試從 HTML 中的腳本變數解析 (備援方案)
-    if (tabs.length === 0) {
-      const gidMatches = Array.from(html.matchAll(/"gid"\s*:\s*"(\d+)"\s*,\s*"name"\s*:\s*"([^"]+)"/g)) as any[];
-      for (const match of gidMatches) {
-        const gid = match[1];
-        const name = match[2];
-        if (!tabs.find(t => t.gid === gid)) tabs.push({ name, gid });
+    // 方案二：從 HTML 原始碼中的 JSON 變數解析 (處理 Unicode 編碼的分頁名)
+    // 強化 Regex 支援處理 gid 有無引號的情況：{"gid":"0","name":"1\u6708"} 或 {"gid":0,"name":"Sheet1"}
+    const gidMatches = Array.from(html.matchAll(/"gid"\s*:\s*"?(\d+)"?\s*,\s*"name"\s*:\s*"([^"]+)"/g)) as any[];
+    for (const match of gidMatches) {
+      const gid = match[1];
+      const rawName = match[2];
+      const name = decodeUnicode(rawName);
+      
+      if (gid && name && !tabs.find(t => t.gid === gid)) {
+        tabs.push({ name, gid });
       }
     }
 
+    // 方案三：單一分頁備援 (如果網址帶有特定 GID)
     if (tabs.length === 0) {
-      // 如果依然沒有，嘗試解析單一分頁的 GID (如果網址本身就帶有 GID)
-      const urlGidMatch = pubHtmlUrl.match(/gid=([0-9]+)/);
+      const urlGidMatch = targetUrl.match(/gid=([0-9]+)/);
       if (urlGidMatch) {
         tabs.push({ name: "預設分頁", gid: urlGidMatch[1] });
       }
