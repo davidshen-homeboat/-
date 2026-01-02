@@ -4,10 +4,11 @@ import { Search, Link as LinkIcon, Plus, Trash2, Phone, Calendar as CalendarIcon
 import Sidebar from './components/Sidebar';
 import AnalysisCard from './components/AnalysisCard';
 import RosterView from './components/RosterView';
+import WeeklyRosterView from './components/WeeklyRosterView';
+import RosterSchedulerView from './components/RosterSchedulerView';
 import { AppView, Reservation, DataSource } from './types';
 import { mapReservationsCSVAsync, fetchCsvStreaming } from './services/dataProcessor';
 
-// 簽章版本升級至 v6，確保新的唯一識別邏輯生效 (含桌號)
 const SIG_VERSION = 'v6'; 
 const STORAGE_KEY_RESERVATIONS = 'bakery_reservations';
 const STORAGE_KEY_SOURCES = 'bakery_sources';
@@ -39,7 +40,6 @@ function App() {
     return saved ? JSON.parse(saved) : [];
   });
   
-  // 人數設為 string 類型以便在手機端處理空白輸入
   const [form, setForm] = useState<any>({
     date: new Date().toISOString().split('T')[0],
     time: '12:00', pax: '2', type: '內用', customerName: '', phone: '', table: '', notes: '', creator: CREATOR_OPTIONS[0], duration: 90
@@ -57,7 +57,6 @@ function App() {
   const [syncingAll, setSyncingAll] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // 強化版簽章：新增 table 與 type，確保極致唯一
   const getSignature = (res: any) => {
     if (!res) return "";
     return [
@@ -139,17 +138,13 @@ function App() {
             try {
               const csvText = await fetchCsvStreaming(source.url, () => {});
               const remoteData = await mapReservationsCSVAsync(csvText, source.id, () => {});
-              
-              // 防空保護機制：如果該分店原本有資料，但抓回來筆數驟降，判定為異常
               const existingCount = reservations.filter(r => r.sourceId === source.id && !r.isLocal).length;
               if (existingCount > 5 && remoteData.length === 0) {
-                console.warn(`Source ${source.name} 偵測到筆數異常歸零，觸發保護。`);
                 failedSourceIds.push(source.id);
               } else {
                 newRemoteReservations = [...newRemoteReservations, ...remoteData];
               }
             } catch (err) { 
-              console.error(`Source ${source.name} 抓取失敗:`, err); 
               failedSourceIds.push(source.id);
             }
         }
@@ -188,7 +183,6 @@ function App() {
     const tableString = isTakeout ? '外帶' : selectedTables.sort().join(', ');
     const targetSourceId = editingReservation?.sourceId || dataSources[0]?.id;
 
-    // 將人數從 string 轉回 number，若為空白則設為 1
     const finalPax = isTakeout ? 1 : (parseInt(form.pax?.toString() || '1') || 1);
 
     const resPayload: Reservation = { 
@@ -248,7 +242,6 @@ function App() {
   const handleDeleteReservation = async (res: Reservation) => {
     if (!confirm(`確定要完全刪除「${res.customerName}」的紀錄嗎？`)) return;
     const sig = getSignature(res);
-    // Fix: replaced oldSig with sig as it was not defined in this scope
     const newBlacklist = { ...syncBlacklist, [sig]: Date.now() };
     setSyncBlacklist(newBlacklist);
     localStorage.setItem(STORAGE_KEY_BLACKLIST, JSON.stringify(newBlacklist));
@@ -380,6 +373,10 @@ function App() {
     switch (currentView) {
       case AppView.ROSTER:
         return <RosterView />;
+      case AppView.WEEKLY_ROSTER:
+        return <WeeklyRosterView />;
+      case AppView.SCHEDULER:
+        return <RosterSchedulerView />;
       case AppView.INTEGRATION:
         return (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -580,7 +577,6 @@ function App() {
                         <div className="flex flex-col">
                            <input type="text" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} placeholder="顧客姓名" className="w-full px-4 py-3 bg-slate-50 rounded-xl font-bold border-none" />
                         </div>
-                        {/* 手機優化：改為 text 搭配 inputMode="numeric" 解決無法歸零問題 */}
                         <div className="flex flex-col relative">
                            <input 
                               type="text" 

@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { CalendarDays, Link as LinkIcon, X, ChefHat, ClipboardList } from 'lucide-react';
+import { CalendarDays, Link as LinkIcon, X, ChefHat, ClipboardList, UserCheck, Sparkles } from 'lucide-react';
 import { AppView } from '../types';
 
 interface SidebarProps {
@@ -13,7 +13,9 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isOpen, onClose }) => {
   const menuItems = [
     { id: AppView.RESERVATIONS, label: '訂位管理', icon: CalendarDays },
+    { id: AppView.WEEKLY_ROSTER, label: '本週值班人員', icon: UserCheck },
     { id: AppView.ROSTER, label: '班表顯示系統', icon: ClipboardList },
+    { id: AppView.SCHEDULER, label: '智能排班工作台', icon: Sparkles },
     { id: AppView.INTEGRATION, label: '資料來源設定', icon: LinkIcon },
   ];
 
@@ -24,7 +26,6 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isOpen, on
 
   return (
     <>
-      {/* Mobile Overlay */}
       <div 
         className={`fixed inset-0 bg-slate-900/50 z-30 transition-opacity duration-300 md:hidden ${
           isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
@@ -63,14 +64,14 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isOpen, on
                   : 'text-slate-300 hover:bg-slate-800 hover:text-white'
               }`}
             >
-              <item.icon className="w-5 h-5" />
+              <item.icon className={`w-5 h-5 ${item.id === AppView.SCHEDULER ? 'text-orange-400' : ''}`} />
               {item.label}
             </button>
           ))}
         </nav>
 
         <div className="p-4 border-t border-slate-700 text-center text-xs text-slate-500">
-          v4.0 Roster Active
+          v6.0 Stable (AI Refined)
         </div>
       </aside>
     </>

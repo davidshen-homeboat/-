@@ -1,7 +1,7 @@
 
 export interface Reservation {
   id: string;
-  sourceId?: string; // Track which data source this reservation belongs to
+  sourceId?: string;
   customerName: string;
   time: string;
   pax: number;
@@ -10,8 +10,8 @@ export interface Reservation {
   phone?: string;
   table?: string;
   notes?: string;
-  creator?: string; // 沈家杭 | TAKA
-  duration?: number; // 用餐分鐘數
+  creator?: string;
+  duration?: number;
   isLocal?: boolean;
   syncStatus?: 'synced' | 'pending' | 'failed';
 }
@@ -22,11 +22,11 @@ export interface DataSource {
   id: string;
   name: string;
   url: string;
-  writeUrl?: string; // Apps Script Web App URL
+  writeUrl?: string;
   type: DataType;
   lastUpdated: string;
   status: 'ACTIVE' | 'ERROR';
-  diningDuration: number; // In minutes, custom for each shop
+  diningDuration: number;
 }
 
 export interface SheetTab {
@@ -36,7 +36,7 @@ export interface SheetTab {
 
 export interface RosterShift {
   date: number;
-  shift: string; // A, B, C, H
+  shift: string;
 }
 
 export interface StaffRoster {
@@ -55,5 +55,7 @@ export interface RosterData {
 export enum AppView {
   RESERVATIONS = 'RESERVATIONS',
   INTEGRATION = 'INTEGRATION',
-  ROSTER = 'ROSTER'
+  ROSTER = 'ROSTER',
+  WEEKLY_ROSTER = 'WEEKLY_ROSTER',
+  SCHEDULER = 'SCHEDULER'
 }

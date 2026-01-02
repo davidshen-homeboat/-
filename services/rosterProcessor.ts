@@ -13,347 +13,259 @@ export interface FetchDiagnostic {
 }
 
 /**
- * 解碼 Unicode 轉義字元
- */
-const decodeUnicode = (str: string): string => {
-  if (!str) return "";
-  let decoded = str;
-  try {
-    decoded = str.replace(/\\\\u([a-fA-F0-9]{4})/g, (_, grp) => 
-      String.fromCharCode(parseInt(grp, 16))
-    );
-    decoded = decoded.replace(/\\u([a-fA-F0-9]{4})/g, (_, grp) => 
-      String.fromCharCode(parseInt(grp, 16))
-    );
-  } catch (e) {
-    return str;
-  }
-  return decoded;
-};
-
-/**
- * 偵測內容是否為 Google 登錄牆或權限受限頁面
+ * 偵測內容是否為 Google 登錄牆
  */
 const checkLoginWall = (content: string): string | null => {
-  if (!content) return null;
-  const indicators = [
-    { key: 'ServiceLogin', msg: '偵測到 Google 登錄頁面。' },
-    { key: 'AccountChooser', msg: '偵測到帳號選擇頁面。' },
-    { key: 'data-google-domain-action', msg: '偵測到公司帳號 (Workspace) 權限限制。' },
-    { key: 'identifierId', msg: '偵測到登錄表單。' },
-    { key: 'google-site-verification', msg: '讀取到無效的 Google 驗證頁面。' },
-    { key: '<!DOCTYPE html>', msg: '讀取到 HTML 網頁而非純文字資料。' }
-  ];
-
-  for (const ind of indicators) {
-    if (content.includes(ind.key)) {
-      return `${ind.msg}請確認試算表已「發佈到網路 (整份文件)」，且共用權限設定正確。`;
-    }
+  if (!content || typeof content !== 'string') return null;
+  const indicators = ['ServiceLogin', 'AccountChooser', 'Sign in', 'data-google-domain-action', 'google-site-verification', '<!DOCTYPE html>'];
+  if (indicators.some(ind => content.includes(ind))) {
+    return "偵測到公司帳號權限限制。請確保試算表已「發佈到網路」，且設定為「任何知道連結的人」。";
   }
   return null;
 };
 
 /**
- * 將原始連結轉換為正確的 CSV 匯出連結 (對齊 dataProcessor.ts 邏輯)
+ * 連結轉換
  */
 const convertToCsvUrl = (url: string, gid?: string): string => {
   let targetUrl = url.trim();
-  
+  if (targetUrl.includes('script.google.com')) {
+    const separator = targetUrl.includes('?') ? '&' : '?';
+    if (!targetUrl.includes('action=')) targetUrl += `${separator}action=export`;
+    if (gid) targetUrl += `&gid=${gid}`;
+    return targetUrl;
+  }
   if (!targetUrl.includes('output=csv') && !targetUrl.includes('format=csv')) {
-    if (targetUrl.includes('/spreadsheets/d/') && !targetUrl.includes('/pub')) {
-      const idMatch = targetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-      const urlGidMatch = targetUrl.match(/gid=([0-9]+)/);
-      const finalGid = gid || urlGidMatch?.[1] || '0';
-      if (idMatch) targetUrl = `https://docs.google.com/spreadsheets/d/${idMatch[1]}/export?format=csv&gid=${finalGid}`;
-    } else if (targetUrl.includes('/pub')) {
-      targetUrl = targetUrl.replace(/\/pubhtml.*/, '/pub?output=csv').replace(/\/pub$/, '/pub?output=csv');
-      if (gid) {
-        targetUrl += targetUrl.includes('?') ? `&gid=${gid}` : `?gid=${gid}`;
-      }
+    const idMatch = targetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    const urlGidMatch = targetUrl.match(/gid=([0-9]+)/);
+    const finalGid = gid || urlGidMatch?.[1] || '0';
+    if (idMatch) {
+      targetUrl = `https://docs.google.com/spreadsheets/d/${idMatch[1]}/export?format=csv&gid=${finalGid}`;
+    } else if (targetUrl.includes('/pubhtml')) {
+      targetUrl = targetUrl.replace(/\/pubhtml.*/, `/pub?output=csv&gid=${finalGid}`);
     }
   }
-
-  // 加入 Cache Buster
-  const cacheBuster = `t=${Date.now()}`;
-  return targetUrl.includes('?') ? `${targetUrl}&${cacheBuster}` : `${targetUrl}?${cacheBuster}`;
+  return targetUrl;
 };
 
-/**
- * 從 HTML 字串中提取分頁資訊
- */
-const parseTabsFromHtml = (html: string): SheetTab[] => {
-  const tabs: SheetTab[] = [];
-  if (!html) return tabs;
-
-  const bootstrapPatterns = [
-    /\[\d+,\s*"([^"]+)"\s*(?:,[^,\]]*){4,12},\s*"?(\d{5,20})"?\s*\]/g,
-    /\["?(\d{5,20})"?\s*,\s*"([^"]+)"\s*,\s*0\s*,\s*0\s*,\s*0/g
-  ];
-
-  bootstrapPatterns.forEach(pattern => {
-    const matches = Array.from(html.matchAll(pattern));
-    matches.forEach(match => {
-      let name = "";
-      let gid = "";
-      if (match[1].length > 4 && /^\d+$/.test(match[1])) {
-        gid = match[1];
-        name = decodeUnicode(match[2]);
-      } else {
-        name = decodeUnicode(match[1]);
-        gid = match[2];
-      }
-      if (name && gid && name.length < 50 && !tabs.find(t => t.gid === gid)) {
-        if (!['gid', 'name', 'true', 'false', 'null', 'undefined'].includes(name.toLowerCase())) {
-          tabs.push({ name, gid });
+export const fetchSheetTabsWithDiagnostic = async (masterUrl: string): Promise<{ tabs: SheetTab[], diagnostic?: FetchDiagnostic }> => {
+  const cleanUrl = masterUrl.trim();
+  if (cleanUrl.includes('script.google.com')) {
+    try {
+      const separator = cleanUrl.includes('?') ? '&' : '?';
+      const scriptUrl = `${cleanUrl}${separator}action=getTabs`;
+      const response = await fetch(scriptUrl);
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data) && data.length > 0) {
+          return { tabs: data.map(t => ({ name: t.name, gid: String(t.gid) })) };
         }
       }
-    });
-  });
-
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-  const menuItems = doc.querySelectorAll('#sheet-menu li a');
-  menuItems.forEach(item => {
-    const name = item.textContent?.trim() || '';
-    const href = item.getAttribute('href') || '';
-    const gidMatch = href.match(/gid=([0-9]+)/);
-    const gid = gidMatch ? gidMatch[1] : href.replace('#', '');
-    if (name && gid && !tabs.find(t => t.gid === gid)) {
-      tabs.push({ name, gid });
-    }
-  });
-
-  return tabs;
-};
-
-const PROXIES = [
-  { name: 'Direct', url: (url: string) => url },
-  { name: 'CorsProxyIO', url: (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}` },
-  { name: 'AllOriginsRaw', url: (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
-  { name: 'AllOriginsJSON', url: (url: string) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}` }
-];
-
-export const fetchSheetTabsWithDiagnostic = async (pubHtmlUrl: string): Promise<{ tabs: SheetTab[], diagnostic?: FetchDiagnostic }> => {
-  let cleanUrl = pubHtmlUrl.trim();
-  
-  // 準備 HTML 偵測用的 URL (pubhtml)
-  let detectionUrl = cleanUrl.split('#')[0].split('?')[0]; 
-  if (detectionUrl.includes('/edit')) {
-    detectionUrl = detectionUrl.replace(/\/edit.*$/, '/pubhtml');
-  } else if (!detectionUrl.endsWith('/pubhtml') && detectionUrl.includes('/spreadsheets/d/')) {
-    detectionUrl = detectionUrl.replace(/\/pub$/, '') + '/pubhtml';
+    } catch (e) {}
   }
-
-  const cacheBuster = `t=${Date.now()}`;
-  const finalDetectionUrl = detectionUrl.includes('?') ? `${detectionUrl}&${cacheBuster}` : `${detectionUrl}?${cacheBuster}`;
-
+  let detectionUrl = cleanUrl;
+  if (!cleanUrl.includes('script.google.com')) {
+    detectionUrl = cleanUrl.replace(/\/edit.*$/, '/pubhtml').replace(/\/pub.*$/, '/pubhtml');
+    if (!detectionUrl.includes('/pubhtml')) detectionUrl += '/pubhtml';
+  }
+  const PROXIES = [{ name: 'Direct', url: (u: string) => u }, { name: 'CorsProxyIO', url: (u: string) => `https://corsproxy.io/?${encodeURIComponent(u)}` }];
   let lastDiagnostic: FetchDiagnostic = {};
-
   for (const proxy of PROXIES) {
     try {
-      const targetUrl = proxy.url(finalDetectionUrl);
+      const targetUrl = proxy.url(detectionUrl);
       const response = await fetch(targetUrl);
-      
-      lastDiagnostic = {
-        status: response.status,
-        statusText: response.statusText,
-        proxyName: proxy.name
-      };
-
+      lastDiagnostic = { status: response.status, statusText: response.statusText, proxyName: proxy.name };
       if (!response.ok) continue;
-
-      let html = '';
-      if (proxy.name === 'AllOriginsJSON') {
-        const data = await response.json();
-        html = data.contents;
-      } else {
-        html = await response.text();
-      }
-
-      if (!html) continue;
-      
+      let html = await response.text();
       const loginError = checkLoginWall(html);
-      if (loginError) {
-        lastDiagnostic.isLoginWall = true;
-        lastDiagnostic.contentSnippet = html.substring(0, 500);
-        // 如果是 Direct 模式發現登入牆，通常代表 Proxy 也會失敗，但在公司網路環境中我們繼續嘗試
-        if (proxy.name === 'Direct') continue;
-      }
-
-      const detectedTabs = parseTabsFromHtml(html);
-      if (detectedTabs.length > 0) {
-        return { 
-          tabs: detectedTabs
-            .filter(t => t.name && !t.name.includes('<') && t.name.length > 0)
-            .sort((a, b) => /月/.test(a.name) ? -1 : 1)
-        };
-      }
-    } catch (err: any) {
-      console.warn(`[Roster] ${proxy.name} fetch failed:`, err);
-    }
+      if (loginError) { lastDiagnostic.isLoginWall = true; continue; }
+      const tabs: SheetTab[] = [];
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const menuItems = doc.querySelectorAll('#sheet-menu li a, .sheet-tabs li a, #footer a, ul[role="tablist"] a');
+      menuItems.forEach(item => {
+        const name = item.textContent?.trim() || '';
+        const href = item.getAttribute('href') || '';
+        const gidMatch = href.match(/gid=([0-9]+)/);
+        if (name && gidMatch && !tabs.find(t => t.gid === gidMatch[1])) {
+          tabs.push({ name, gid: gidMatch[1] });
+        }
+      });
+      if (tabs.length > 0) return { tabs };
+    } catch (err) {}
   }
-
-  const urlGidMatch = pubHtmlUrl.match(/gid=([0-9]+)/);
-  if (urlGidMatch) {
-    return { 
-      tabs: [{ name: "預設工作表 (網址提取)", gid: urlGidMatch[1] }],
-      diagnostic: lastDiagnostic 
-    };
-  }
-
   return { tabs: [], diagnostic: lastDiagnostic };
 };
 
-export const fetchSheetTabs = async (pubHtmlUrl: string): Promise<SheetTab[]> => {
-  const result = await fetchSheetTabsWithDiagnostic(pubHtmlUrl);
-  if (result.tabs.length > 0) return result.tabs;
-  throw new Error("無法辨識分頁。請確認已發佈為「整份文件」，並檢查公司帳號權限。");
+export const fetchRosterCsvWithProxy = async (csvUrl: string, gid?: string): Promise<string> => {
+  const finalCsvUrl = convertToCsvUrl(csvUrl, gid);
+  const PROXY_URL = `https://corsproxy.io/?${encodeURIComponent(finalCsvUrl)}&t=${Date.now()}`;
+  try {
+    const response = await fetch(PROXY_URL);
+    if (response.ok) {
+      const text = await response.text();
+      if (!checkLoginWall(text)) return text;
+    }
+  } catch (e) {}
+  const directResp = await fetch(finalCsvUrl);
+  if (directResp.ok) {
+    const text = await directResp.text();
+    const loginError = checkLoginWall(text);
+    if (loginError) throw new Error(loginError);
+    return text;
+  }
+  throw new Error("連線失敗。請確認試算表已「發佈到網路」。");
+};
+
+const splitCsvToLines = (csv: string): string[][] => {
+  const result: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = '';
+  let inQuotes = false;
+  for (let i = 0; i < csv.length; i++) {
+    const char = csv[i];
+    const nextChar = csv[i + 1];
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') { currentCell += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) { currentRow.push(currentCell.trim()); currentCell = ''; }
+    else if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && nextChar === '\n') i++;
+      currentRow.push(currentCell.trim());
+      if (currentRow.length > 0 || currentCell !== '') result.push(currentRow);
+      currentRow = []; currentCell = '';
+    } else currentCell += char;
+  }
+  if (currentCell !== '' || currentRow.length > 0) { currentRow.push(currentCell.trim()); result.push(currentRow); }
+  return result;
 };
 
 /**
- * 抓取班表 CSV 資料 (與訂位系統連線策略完全對齊)
+ * 輔助函式：從字串提取年月
  */
-export const fetchRosterCsvWithProxy = async (csvUrl: string): Promise<string> => {
-  // 1. 使用重寫邏輯確保 URL 格式正確
-  const finalCsvUrl = convertToCsvUrl(csvUrl);
-  let lastError = "";
+const extractDateInfo = (str: string) => {
+  let year = "";
+  let month = "";
 
-  // 2. 針對 Workspace 環境，Direct Fetch 是唯一能攜帶 Cookie 的方式
-  // 我們先嘗試 Direct Fetch，如果成功且不是登入牆，就直接回傳
-  try {
-    const response = await fetch(finalCsvUrl);
-    if (response.ok) {
-        const content = await response.text();
-        const loginError = checkLoginWall(content);
-        if (!loginError) return content;
-        lastError = loginError;
-    }
-  } catch (err) {
-    console.warn("[Roster] Direct fetch failed, trying proxies...", err);
+  // 1. 偵測年份：支援 2024-2029 或 113-119 (民國)
+  const yearMatch = str.match(/(202[4-9]|11[3-9])/);
+  if (yearMatch) {
+    let yVal = parseInt(yearMatch[1]);
+    if (yVal < 200) yVal += 1911; // 民國年換算
+    year = yVal.toString();
   }
 
-  // 3. 如果 Direct 失敗或抓到登入牆，才嘗試其他 Proxy (僅適用於真正的公開表單)
-  for (const proxy of PROXIES) {
-    if (proxy.name === 'Direct') continue; // 已經試過
-
-    try {
-      const targetUrl = proxy.url(finalCsvUrl);
-      const response = await fetch(targetUrl);
-      
-      if (!response.ok) continue;
-
-      let csv = '';
-      if (proxy.name === 'AllOriginsJSON') {
-        const data = await response.json();
-        csv = data.contents;
-      } else {
-        csv = await response.text();
-      }
-
-      if (csv && csv.length > 20) {
-        // 如果 Proxy 抓到 HTML (通常是 200 OK 但內容是登入頁)，代表 Proxy 無法穿透
-        if (csv.trim().startsWith('<!DOCTYPE') || csv.trim().startsWith('<html')) {
-          continue;
-        }
-        return csv;
-      }
-    } catch (err) {
-      console.warn(`[Roster] ${proxy.name} CSV fetch attempt failed`);
-    }
+  // 2. 偵測月份：支援 1-12，後接「月」、「Month」、「.」或字串結尾
+  const monthMatch = str.match(/(\d{1,2})(?:月|Month|\.|$|號)/i);
+  if (monthMatch) {
+    const mVal = parseInt(monthMatch[1]);
+    if (mVal >= 1 && mVal <= 12) month = mVal.toString();
   }
-  
-  throw new Error(lastError || "無法讀取班表資料。這通常是公司帳號 (Workspace) 的權限限制，請確認試算表已「發佈到網路」。");
+
+  return { year, month };
 };
 
-export const parseRosterCSV = (csv: string): RosterData => {
-  if (!csv || csv.trim().startsWith('<!DOCTYPE')) {
-    throw new Error("抓取的資料格式錯誤 (收到網頁內容而非 CSV)。");
+export const parseRosterCSV = (csv: string, tabName?: string): RosterData => {
+  const cleanCsv = csv.replace(/^\ufeff/, '');
+  const lines = splitCsvToLines(cleanCsv).filter(row => row.length > 0);
+  if (lines.length === 0) throw new Error("資料格式不正確。");
+
+  let detectedYear = new Date().getFullYear().toString();
+  let detectedMonth = (new Date().getMonth() + 1).toString();
+  
+  // 1. 年月偵測優先權一：從分頁名稱提取 (通常最準確)
+  if (tabName) {
+    const { year, month } = extractDateInfo(tabName);
+    if (year) detectedYear = year;
+    if (month) detectedMonth = month;
   }
 
-  const lines = csv.split(/\r?\n/).map(line => {
-    let row: string[] = [];
-    let inQuotes = false;
-    let currentValue = '';
-    for (let char of line) {
-      if (char === '"') inQuotes = !inQuotes;
-      else if (char === ',' && !inQuotes) {
-        row.push(currentValue.trim().replace(/^"|"$/g, ''));
-        currentValue = '';
-      } else currentValue += char;
-    }
-    row.push(currentValue.trim().replace(/^"|"$/g, ''));
-    return row;
-  });
-
-  if (lines.length < 2) throw new Error("CSV 資料不足");
-
-  let year = new Date().getFullYear().toString();
-  let month = (new Date().getMonth() + 1).toString();
-
-  for (let i = 0; i < Math.min(10, lines.length); i++) {
-    const text = lines[i].join('');
-    const match = text.match(/(\d{4})[年/](\d{1,2})[月]?/);
-    if (match) {
-      year = match[1];
-      month = match[2];
-      break;
+  // 1. 年月偵測優先權二：若分頁名沒抓到，從 CSV 內容前幾列提取
+  if (!tabName || detectedYear === "" || detectedMonth === "") {
+    for (let i = 0; i < Math.min(15, lines.length); i++) {
+      const rowStr = lines[i].join(' ');
+      const { year, month } = extractDateInfo(rowStr);
+      if (year && !detectedYear) detectedYear = year;
+      if (month && !detectedMonth) detectedMonth = month;
+      if (detectedYear && detectedMonth) break;
     }
   }
 
+  // 2. 定位「物理錨點 (Physical Anchor)」
   let headerIdx = -1;
-  let days: number[] = [];
-  let startCol = -1;
+  let nameAnchorCol = -1;
+  let dateAnchorCol = -1;
 
-  for (let i = 0; i < Math.min(20, lines.length); i++) {
+  for (let i = 0; i < Math.min(45, lines.length); i++) {
     const row = lines[i];
-    const potentialDays = row.map(v => parseInt(v)).filter(n => n >= 1 && n <= 31);
-    if (potentialDays.length >= 28) {
+    const nIdx = row.findIndex(c => c === '姓名' || c === 'Name');
+    const dIdx = row.findIndex(c => c === '1' || c === '01');
+    const isDateHeader = dIdx !== -1 && row.length > dIdx + 1 && (row[dIdx+1] === '2' || row[dIdx+1] === '02');
+
+    if (isDateHeader) {
       headerIdx = i;
-      days = potentialDays;
-      startCol = row.findIndex(v => parseInt(v) === 1);
+      dateAnchorCol = dIdx;
+      if (nIdx !== -1) nameAnchorCol = nIdx;
+      else if (i > 0) {
+        const prevRow = lines[i-1];
+        nameAnchorCol = prevRow.findIndex(c => c === '姓名' || c === 'Name');
+      }
       break;
     }
   }
 
-  if (headerIdx === -1) {
-    for (let i = 0; i < Math.min(20, lines.length); i++) {
-      const idx = lines[i].findIndex(v => v === '1' || v === '01');
-      if (idx !== -1) {
-        headerIdx = i;
-        startCol = idx;
-        days = lines[i].slice(startCol).map(v => parseInt(v)).filter(n => !isNaN(n) && n >= 1 && n <= 31);
+  if (headerIdx === -1) headerIdx = 3;
+  if (nameAnchorCol === -1) nameAnchorCol = 1;
+  if (dateAnchorCol === -1) dateAnchorCol = 4;
+
+  const anchorDelta = dateAnchorCol - nameAnchorCol;
+  const staffs: StaffRoster[] = [];
+  let lastValidShopName = "未知分店";
+  const dataStartRow = headerIdx + 1;
+
+  for (let i = dataStartRow; i < lines.length; i++) {
+    const row = lines[i];
+    if (!row || row.length <= 1) continue;
+
+    let staffName = "";
+    let actualNameIdx = -1;
+
+    const searchOffsets = [0, -1, 1, -2, 2];
+    for (const off of searchOffsets) {
+      const targetIdx = nameAnchorCol + off;
+      const val = (row[targetIdx] || "").trim();
+      if (val && val.length >= 2 && val.length <= 10 && !/^\d+$/.test(val) && !['姓名', '店名', '店別', '序號'].includes(val)) {
+        staffName = val;
+        actualNameIdx = targetIdx;
         break;
       }
     }
-  }
 
-  if (headerIdx === -1 || startCol === -1) {
-    throw new Error("無法辨識班表格式 (找不到日期標題列)");
-  }
+    if (!staffName || actualNameIdx === -1) continue;
 
-  const staffs: StaffRoster[] = [];
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const row = lines[i];
-    const shopName = row[0] || "";
-    const staffName = row[1] || "";
-    
-    if (!staffName || staffName.length > 20 || staffName.includes('日期')) continue;
+    let shopNameCandidate = (row[0] || "").trim();
+    if (shopNameCandidate && shopNameCandidate !== staffName && shopNameCandidate.length < 20) {
+      lastValidShopName = shopNameCandidate;
+    }
 
+    const finalStartCol = actualNameIdx + anchorDelta;
     const shifts: RosterShift[] = [];
-    for (let j = 0; j < days.length; j++) {
-      const shiftValue = row[startCol + j];
-      if (shiftValue && shiftValue.trim()) {
-        shifts.push({
-          date: days[j],
-          shift: shiftValue.trim().toUpperCase()
-        });
+    for (let d = 0; d < 31; d++) {
+      const colIdx = finalStartCol + d;
+      let val = (colIdx >= 0 && colIdx < row.length) ? (row[colIdx] || "").trim() : "";
+      if (val === staffName || (val.length > 5 && !['休', 'OFF'].includes(val))) {
+        val = "";
       }
+      shifts.push({ date: d + 1, shift: val });
     }
 
-    if (shifts.length > 0) {
-      staffs.push({ shopName, staffName, shifts });
-    }
+    staffs.push({ shopName: lastValidShopName, staffName, shifts });
   }
 
-  return { year, month, days, staffs };
+  if (staffs.length === 0) throw new Error("解析失敗：找不到員工資料或姓名錨點。");
+  return { 
+    year: detectedYear, 
+    month: detectedMonth, 
+    days: Array.from({length: 31}, (_, i) => i + 1), 
+    staffs 
+  };
 };
